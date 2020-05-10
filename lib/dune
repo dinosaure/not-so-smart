@@ -1,0 +1,9 @@
+(library
+ (name smart)
+ (modules smart filter capability state protocol encoder decoder)
+ (libraries domain-name astring fmt))
+
+(library
+ (name neg)
+ (modules neg sigs find_common default)
+ (libraries psq cstruct smart))

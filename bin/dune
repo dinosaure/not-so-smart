@@ -1,0 +1,4 @@
+(executable
+ (name repl)
+ (libraries conduit-lwt-unix conduit-lwt-unix.tcp bos smart neg hxd.string
+   uri))
