@@ -25,24 +25,32 @@ module Advertised_refs = struct
       Some uid
     with _exn -> None
 
+  let references ~equal ?(peeled = false) refnames { refs; _ } =
+    let fold acc (uid, refname', peeled') =
+      if List.exists (equal refname') refnames && peeled = peeled'
+      then uid :: acc
+      else acc in
+    List.fold_left fold [] refs
+
+  let refs { refs; _ } = refs
   let capabilities { capabilities; _ } = capabilities
 
   let pp ppf { shallows; refs; capabilities; version } =
-    Fmt.pf ppf "version %d@," version ;
+    Fmt.pf ppf "version %d@ " version ;
     match refs with
     | [] ->
-        Fmt.pf ppf "0 capabilities^{}@," ;
+        Fmt.pf ppf "0 capabilities^{}@ " ;
         Fmt.pf ppf "%a@," Fmt.(Dump.list Capability.pp) capabilities ;
-        List.iter (Fmt.pf ppf "shallow %s@,") shallows
+        List.iter (Fmt.pf ppf "shallow %s@ ") shallows
     | head :: refs ->
         let pp_ref ppf (uid, refname, peeled) =
           if peeled
           then Fmt.pf ppf "%s %s^{}" uid refname
           else Fmt.pf ppf "%s %s" uid refname in
-        Fmt.pf ppf "%a@," pp_ref head ;
-        Fmt.pf ppf "%a@," Fmt.(Dump.list Capability.pp) capabilities ;
-        List.iter (Fmt.pf ppf "%a@," pp_ref) refs ;
-        List.iter (Fmt.pf ppf "shallow %s@,") shallows
+        Fmt.pf ppf "%a@ " pp_ref head ;
+        Fmt.pf ppf "%a@ " Fmt.(Dump.list Capability.pp) capabilities ;
+        List.iter (Fmt.pf ppf "%a@ " pp_ref) refs ;
+        List.iter (Fmt.pf ppf "shallow %s@ ") shallows
 end
 
 module Proto_request = struct

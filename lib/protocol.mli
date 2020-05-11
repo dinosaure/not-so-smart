@@ -1,18 +1,27 @@
 module Advertised_refs : sig
-  type ('hash, 'reference) t
+  type ('uid, 'reference) t
 
   val pp : (string, string) t Fmt.t
 
   val head : ('a, string) t -> 'a option
 
-  val capabilities : ('hash, 'reference) t -> Capability.t list
+  val capabilities : ('uid, 'reference) t -> Capability.t list
+
+  val refs : ('uid, 'reference) t -> ('uid * 'reference * bool) list
 
   val reference :
     equal:('ref -> 'ref -> bool) ->
     ?peeled:bool ->
     'ref ->
-    ('hash, 'ref) t ->
-    'hash option
+    ('uid, 'ref) t ->
+    'uid option
+
+  val references :
+    equal:('ref -> 'ref -> bool) ->
+    ?peeled:bool ->
+    'ref list ->
+    ('uid, 'ref) t ->
+    'uid list
 end
 
 module Proto_request : sig
@@ -25,42 +34,42 @@ module Proto_request : sig
 end
 
 module Want : sig
-  type ('hash, 'reference) t
+  type ('uid, 'reference) t
 
   val want :
     ?deepen:[ `Depth of int | `Timestamp of int64 | `Not of 'reference ] ->
     ?filter:Filter.t ->
-    ?shallows:'hash list ->
-    ?others:'hash list ->
-    'hash ->
-    ('hash, 'reference) t
+    ?shallows:'uid list ->
+    ?others:'uid list ->
+    'uid ->
+    ('uid, 'reference) t
 end
 
 module Result : sig
-  type 'hash t = private NAK | ACK of 'hash
+  type 'uid t = private NAK | ACK of 'uid
 
   val pp : string t Fmt.t
 end
 
 module Negotiation : sig
-  type 'hash t = private
-    | ACK of 'hash
-    | ACK_continue of 'hash
-    | ACK_ready of 'hash
-    | ACK_common of 'hash
+  type 'uid t = private
+    | ACK of 'uid
+    | ACK_continue of 'uid
+    | ACK_ready of 'uid
+    | ACK_common of 'uid
     | NAK
 
-  val is_common : 'hash t -> bool
+  val is_common : 'uid t -> bool
 
-  val is_ready : 'hash t -> bool
+  val is_ready : 'uid t -> bool
 
-  val is_nak : 'hash t -> bool
+  val is_nak : 'uid t -> bool
 
   val pp : string t Fmt.t
 end
 
 module Shallow : sig
-  type 'hash t = private Shallow of 'hash | Unshallow of 'hash
+  type 'uid t = private Shallow of 'uid | Unshallow of 'uid
 end
 
 module Decoder : sig

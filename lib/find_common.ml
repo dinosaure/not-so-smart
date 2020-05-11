@@ -1,5 +1,8 @@
 open Sigs
 
+let src = Logs.Src.create "find-common"
+module Log = (val Logs.src_log src : Logs.LOG)
+
 let _initial_flush = 16
 
 let _max_in_vain = 256
@@ -71,13 +74,6 @@ type configuration = {
   no_done : bool;
 }
 
-type ('uid, 'ref, 'g, 's) access = {
-  exists : 'uid -> ('uid, 'g) store -> (('uid * int ref * int64) option, 's) io;
-  parents : 'uid -> ('uid, 'g) store -> (('uid * int ref * int64) list, 's) io;
-  deref : 'ref -> ('uid, 'g) store -> ('uid option, 's) io;
-  locals : ('uid, 'g) store -> ('ref list, 's) io;
-}
-
 let tips { bind; return } { exists; deref; locals; _ } store negotiator =
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
@@ -101,6 +97,7 @@ let find_common ({ bind; return } as scheduler) io flow
       | x :: r -> f a x >>= fun a -> go a r in
     go a l in
   let fold acc remote_uid =
+    Log.debug (fun m -> m "<%s> exists locally?" remote_uid) ;
     access.exists remote_uid store >>= function
     | Some _ -> return acc
     | None -> return ((remote_uid, ref 0) :: acc) in

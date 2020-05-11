@@ -6,4 +6,4 @@
 (library
  (name neg)
  (modules neg sigs find_common default)
- (libraries psq cstruct smart))
+ (libraries logs psq cstruct smart))
