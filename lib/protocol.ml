@@ -121,6 +121,13 @@ module Negotiation = struct
     | ACK_ready uid -> Fmt.pf ppf "ACK %s ready" uid
     | ACK_common uid -> Fmt.pf ppf "ACK %s common" uid
     | NAK -> Fmt.pf ppf "NAK"
+
+  let map ~f = function
+    | ACK uid -> ACK (f uid)
+    | ACK_continue uid -> ACK_continue (f uid)
+    | ACK_ready uid -> ACK_ready (f uid)
+    | ACK_common uid -> ACK_common (f uid)
+    | NAK -> NAK
 end
 
 module Shallow = struct

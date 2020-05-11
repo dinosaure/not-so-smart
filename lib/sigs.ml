@@ -1,6 +1,6 @@
 type ('a, 's) io
 
-type ('a, 's) store
+type ('k, 'v, 's) store
 
 type 's scheduler = {
   bind : 'a 'b. ('a, 's) io -> ('a -> ('b, 's) io) -> ('b, 's) io;
@@ -16,11 +16,11 @@ type ('flow, 'error, 's) flow = {
   pp_error : Format.formatter -> 'error -> unit;
 }
 
-type ('uid, 'ref, 'g, 's) access = {
-  exists : 'uid -> ('uid, 'g) store -> (('uid * int ref * int64) option, 's) io;
-  parents : 'uid -> ('uid, 'g) store -> (('uid * int ref * int64) list, 's) io;
-  deref : 'ref -> ('uid, 'g) store -> ('uid option, 's) io;
-  locals : ('uid, 'g) store -> ('ref list, 's) io;
+type ('uid, 'ref, 'v, 'g, 's) access = {
+  exists : 'uid -> ('uid, 'v, 'g) store -> ('v option, 's) io;
+  parents : 'uid -> ('uid, 'v, 'g) store -> ('v list, 's) io;
+  deref : 'ref -> ('uid, 'v, 'g) store -> ('uid option, 's) io;
+  locals : ('uid, 'v, 'g) store -> ('ref list, 's) io;
 }
 
 module type SCHED = sig
@@ -34,13 +34,13 @@ module type SCHED = sig
 end
 
 module type STORE = sig
-  type 'a s
+  type ('a, 'b) s
 
   type t
 
-  external inj : 'a s -> ('a, t) store = "%identity"
+  external inj : ('a, 'b) s -> ('a, 'b, t) store = "%identity"
 
-  external prj : ('a, t) store -> 'a s = "%identity"
+  external prj : ('a, 'b, t) store -> ('a, 'b) s = "%identity"
 end
 
 module Common_sched = struct
@@ -69,10 +69,10 @@ struct
 end
 
 module Make_store (T : sig
-  type 'a t
+  type ('k, 'v) t
 end) =
 struct
-  type 'a s = 'a T.t
+  type ('a, 'b) s = ('a, 'b) T.t
 
   include Common_store
 end

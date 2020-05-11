@@ -68,6 +68,8 @@ module Negotiation : sig
   val is_nak : 'uid t -> bool
 
   val pp : string t Fmt.t
+
+  val map : f:('a -> 'b) -> 'a t -> 'b t
 end
 
 module Shallow : sig

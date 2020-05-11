@@ -4,7 +4,7 @@ type ('k, 'p, 't) psq =
   (module Psq.S with type k = 'k and type p = 'p and type t = 't)
 
 type ('uid, 'g, 's) parents =
-  'uid -> ('uid, 'g) store -> (('uid * int ref * int64) list, 's) io
+  'uid -> ('uid, ('uid * int ref * int64), 'g) store -> (('uid * int ref * int64) list, 's) io
 
 type 'uid t =
   | State : {
@@ -50,7 +50,7 @@ let rec mark_common :
     type g s uid.
     s scheduler ->
     parents:(uid, g, s) parents ->
-    (uid, g) store ->
+    (uid, (uid * int ref * int64), g) store ->
     uid t ->
     uid * int ref * int64 ->
     bool ->
@@ -80,7 +80,7 @@ let known_common :
     type g s uid.
     s scheduler ->
     parents:(uid, g, s) parents ->
-    (uid, g) store ->
+    (uid, (uid * int ref * int64), g) store ->
     uid t ->
     uid * int ref * int64 ->
     (unit, s) io =
@@ -97,7 +97,7 @@ let ack :
     type g s uid.
     s scheduler ->
     parents:(uid, g, s) parents ->
-    (uid, g) store ->
+    (uid, (uid * int ref * int64), g) store ->
     uid t ->
     uid * int ref * int64 ->
     (bool, s) io =
@@ -112,7 +112,7 @@ let get_rev :
     type g s uid.
     s scheduler ->
     parents:(uid, g, s) parents ->
-    (uid, g) store ->
+    (uid, (uid * int ref * int64), g) store ->
     uid t ->
     (uid option, s) io =
  fun ({ bind; return } as scheduler) ~parents store
@@ -160,7 +160,7 @@ let next :
     type g s uid.
     s scheduler ->
     parents:(uid, g, s) parents ->
-    (uid, g) store ->
+    (uid, (uid * int ref * int64), g) store ->
     uid t ->
     (uid option, s) io =
  fun scheduler ~parents store t -> get_rev scheduler ~parents store t

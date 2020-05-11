@@ -3,6 +3,7 @@ open Lwt_backend
 open Store_backend
 
 let ( <.> ) f g = fun x -> f (g x)
+let identity x = x
 
 let src = Logs.Src.create "fetch"
 
@@ -52,10 +53,13 @@ module V1 = struct
         (pack ~push_stdout ~push_stderr:(Fmt.epr "%s\n%!")
            ~push_pack:ignore) in
     let ctx = Smart.make capabilities in
-    let negotiator = Neg.Default.make ~compare:String.compare in
+    let compare (a : hex) (b : hex) = String.compare (a :> string) (b :> string) in
+    let negotiator = Neg.negotiator ~compare in
     let open Lwt.Infix in
     Neg.tips lwt access store negotiator |> lwt_prj >>= fun () ->
     Neg.run lwt lwt_fail lwt_io flow (prelude ctx) |> lwt_prj >>= fun uids ->
+    (* XXX(dinosaure): unsafe part. *)
+    let uids = List.map of_hex uids in
     Neg.find_common lwt lwt_io flow fetch_cfg access store negotiator ctx uids
     |> lwt_prj
     >>= fun res ->
@@ -100,7 +104,8 @@ let fetch uri ?(version= `V1) ?(no_done = false) ?(capabilities = []) want path 
   match version, Uri.scheme uri, Uri.host uri, Uri.path uri with
   | `V1, Some "git", Some domain_name, path ->
       let fetch_cfg =
-        { Neg.stateless = false; multi_ack = multi_ack capabilities; no_done }
+        { Neg.stateless = false; multi_ack = multi_ack capabilities; no_done
+        ; to_hex= to_hex; of_hex= of_hex }
       in
       let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
       let fiber =

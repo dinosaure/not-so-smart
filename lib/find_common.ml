@@ -1,5 +1,7 @@
 open Sigs
 
+let ( <.> ) f g = fun x -> f (g x)
+
 let src = Logs.Src.create "find-common"
 module Log = (val Logs.src_log src : Logs.LOG)
 
@@ -12,7 +14,7 @@ let _large_flush = 16384
 let _pipe_safe_flush = 32
 
 type ('uid, 'g, 's) exists =
-  ('uid, 'g) store -> 'uid -> (('uid * int ref) option, 's) io
+  ('uid, ('uid * int ref * int64), 'g) store -> 'uid -> (('uid * int ref) option, 's) io
 
 type ('a, 's) raise = exn -> ('a, 's) io
 
@@ -55,8 +57,8 @@ let run :
    with Smart.v1 and implement a state of the art synchronisation algorithm, I
    translated as is [fetch-pack.c:find_common] in OCaml. *)
 
-let unsafe_write_have ctx uid =
-  let packet = Fmt.strf "have %s\n" uid in
+let unsafe_write_have ctx hex =
+  let packet = Fmt.strf "have %s\n" hex in
   Smart.Unsafe.write ctx packet
 
 let unsafe_write_done ctx = Smart.Unsafe.write ctx "done\n"
@@ -68,10 +70,12 @@ let next_flush stateless count =
   then count lsl 1
   else count + _pipe_safe_flush
 
-type configuration = {
+type 'uid configuration = {
   stateless : bool;
   mutable multi_ack : [ `None | `Some | `Detailed ];
   no_done : bool;
+  of_hex : string -> 'uid;
+  to_hex : 'uid -> string;
 }
 
 let tips { bind; return } { exists; deref; locals; _ } store negotiator =
@@ -88,7 +92,7 @@ let tips { bind; return } { exists; deref; locals; _ } store negotiator =
   locals store >>= go
 
 let find_common ({ bind; return } as scheduler) io flow
-    ({ stateless; no_done; _ } as cfg) access store negotiator ctx refs =
+    ({ stateless; no_done; of_hex; to_hex; _ } as cfg) access store negotiator ctx refs =
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
   let fold_left_s ~f a l =
@@ -97,7 +101,7 @@ let find_common ({ bind; return } as scheduler) io flow
       | x :: r -> f a x >>= fun a -> go a r in
     go a l in
   let fold acc remote_uid =
-    Log.debug (fun m -> m "<%s> exists locally?" remote_uid) ;
+    Log.debug (fun m -> m "<%s> exists locally?" (to_hex remote_uid)) ;
     access.exists remote_uid store >>= function
     | Some _ -> return acc
     | None -> return ((remote_uid, ref 0) :: acc) in
@@ -108,8 +112,8 @@ let find_common ({ bind; return } as scheduler) io flow
   | uid :: others ->
       run scheduler raise io flow
         Smart.(
-          let uid, _ = uid in
-          let others = List.map fst others in
+          let uid = (to_hex <.> fst) uid in
+          let others = List.map (to_hex <.> fst) others in
           send ctx want (Want.want uid ~others))
       >>= fun () ->
       let in_vain = ref 0 in
@@ -125,7 +129,7 @@ let find_common ({ bind; return } as scheduler) io flow
         >>= function
         | None -> return ()
         | Some uid ->
-            unsafe_write_have ctx uid ;
+            unsafe_write_have ctx (to_hex uid) ;
             (* completely unsafe! *)
             incr in_vain ;
             incr count ;
@@ -142,7 +146,7 @@ let find_common ({ bind; return } as scheduler) io flow
                 >>= fun _shallows ->
                 let rec loop () =
                   run scheduler raise io flow Smart.(recv ctx ack)
-                  >>= fun ack ->
+                  >>| Smart.Negotiation.map ~f:of_hex >>= fun ack ->
                   match ack with
                   | Smart.Negotiation.NAK -> return `Continue
                   | Smart.Negotiation.ACK _ ->
@@ -167,7 +171,7 @@ let find_common ({ bind; return } as scheduler) io flow
                           then (
                             (* we need to replay the have for this object on the next RPC request so
                                the peer kows it is in common with us. *)
-                            unsafe_write_have ctx uid ;
+                            unsafe_write_have ctx (to_hex uid) ;
                             (* reset [in_vain] because an ack for this commit has not been seen. *)
                             in_vain := 0 ;
                             retval := 0 ;
@@ -218,7 +222,7 @@ let find_common ({ bind; return } as scheduler) io flow
       let rec go () =
         if !flushes > 0 || cfg.multi_ack = `Some || cfg.multi_ack = `Detailed
         then (
-          run scheduler raise io flow Smart.(recv ctx ack) >>= fun ack ->
+          run scheduler raise io flow Smart.(recv ctx ack) >>| Smart.Negotiation.map ~f:of_hex >>= fun ack ->
           match ack with
           | Smart.Negotiation.ACK _ -> return 0
           | Smart.Negotiation.ACK_common _ | Smart.Negotiation.ACK_continue _
