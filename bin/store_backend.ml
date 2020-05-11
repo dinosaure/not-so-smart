@@ -10,7 +10,9 @@ module Store = Neg.Sigs.Make_store (struct
 end)
 
 type git = Store.t
+
 type hex = string
+
 type reference = string
 
 let store_prj = Store.prj
@@ -18,6 +20,7 @@ let store_prj = Store.prj
 let store_inj = Store.inj
 
 let to_hex x = x
+
 let of_hex x = x
 
 let failwithf fmt = Fmt.kstrf (fun err -> raise (Failure err)) fmt
@@ -40,7 +43,7 @@ let parents :
     s scheduler ->
     Fpath.t ->
     hex ->
-    (hex, (hex * int ref * int64), git) store ->
+    (hex, hex * int ref * int64, git) store ->
     ((hex * int ref * int64) list, s) io =
  fun { Neg.Sigs.return; _ } path uid store ->
   let store = Store.prj store in
@@ -81,7 +84,7 @@ let deref :
     s scheduler ->
     Fpath.t ->
     reference ->
-    (hex, (hex * int ref * int64), git) store ->
+    (hex, hex * int ref * int64, git) store ->
     (hex option, s) io =
  fun { Neg.Sigs.return; _ } path reference _ ->
   let fiber =
@@ -98,8 +101,11 @@ let deref :
       failwithf "%a" R.pp_msg err
 
 let locals :
-    type s. s scheduler -> Fpath.t -> (hex, (hex * int ref * int64), git) store -> (reference list, s) io
-    =
+    type s.
+    s scheduler ->
+    Fpath.t ->
+    (hex, hex * int ref * int64, git) store ->
+    (reference list, s) io =
  fun { Neg.Sigs.return; _ } path _ ->
   let fiber =
     let open Bos in
@@ -137,7 +143,11 @@ let exists { Neg.Sigs.return; _ } path uid store =
       Log.warn (fun m -> m "Got an error [exists]: %a" R.pp_msg err) ;
       return None
 
-let access : type s. s scheduler -> Fpath.t -> (hex, reference, (hex * int ref * int64), git, s) access =
+let access :
+    type s.
+    s scheduler ->
+    Fpath.t ->
+    (hex, reference, hex * int ref * int64, git, s) access =
  fun scheduler path ->
   let exists uid store = exists scheduler path uid store in
   {

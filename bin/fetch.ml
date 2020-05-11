@@ -2,7 +2,8 @@ open Rresult
 open Lwt_backend
 open Store_backend
 
-let ( <.> ) f g = fun x -> f (g x)
+let ( <.> ) f g x = f (g x)
+
 let identity x = x
 
 let src = Logs.Src.create "fetch"
@@ -14,21 +15,24 @@ let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 let references want have =
   match want with
   | `None -> []
-  | `All -> List.fold_left (fun acc -> function
-      | (uid, _, false) -> uid :: acc
-      | _ -> acc) [] have
+  | `All ->
+      List.fold_left
+        (fun acc -> function uid, _, false -> uid :: acc | _ -> acc)
+        [] have
   | `Some refs ->
-    let fold acc (uid, refname, peeled) =
-      if List.exists ((=) refname) refs && not peeled
-      then uid :: acc else acc in
-    List.fold_left fold [] have
+      let fold acc (uid, refname, peeled) =
+        if List.exists (( = ) refname) refs && not peeled
+        then uid :: acc
+        else acc in
+      List.fold_left fold [] have
 
 module V1 = struct
-  let fetch ~capabilities ?want:(refs = `None) ~host path
-      flow store access fetch_cfg =
+  let fetch ~capabilities ?want:(refs = `None) ~host path flow store access
+      fetch_cfg =
     let push_stdout, _no_progress =
-      if List.exists ((=) `No_progress) capabilities
-      then ignore, true else
+      if List.exists (( = ) `No_progress) capabilities
+      then (ignore, true)
+      else
         let mutex = Lwt_mutex.create () in
         let print v =
           Lwt.async @@ fun () ->
@@ -36,7 +40,7 @@ module V1 = struct
           Fmt.pr "%s%!" v ;
           if not (String.contains v '\r') then Fmt.pr "\n%!" ;
           Lwt.return_unit in
-        print, false in
+        (print, false) in
     let prelude ctx =
       let open Smart in
       let* () =
@@ -50,10 +54,11 @@ module V1 = struct
     let pack ctx =
       let open Smart in
       recv ctx
-        (pack ~push_stdout ~push_stderr:(Fmt.epr "%s\n%!")
-           ~push_pack:ignore) in
+        (pack ~push_stdout ~push_stderr:(Fmt.epr "%s\n%!") ~push_pack:ignore)
+    in
     let ctx = Smart.make capabilities in
-    let compare (a : hex) (b : hex) = String.compare (a :> string) (b :> string) in
+    let compare (a : hex) (b : hex) =
+      String.compare (a :> string) (b :> string) in
     let negotiator = Neg.negotiator ~compare in
     let open Lwt.Infix in
     Neg.tips lwt access store negotiator |> lwt_prj >>= fun () ->
@@ -72,10 +77,11 @@ module V1 = struct
     Log.debug (fun m -> m "Try to connect to <%a>." Domain_name.pp domain_name) ;
     Conduit_lwt_unix.flow resolvers domain_name >>= function
     | Error err ->
-      Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
-      failwithf "%a" Conduit_lwt_unix.pp_error err
+        Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
+        failwithf "%a" Conduit_lwt_unix.pp_error err
     | Ok flow -> (
-        Log.info (fun m -> m "Connected to <%a/%s>." Domain_name.pp domain_name path) ;
+        Log.info (fun m ->
+            m "Connected to <%a/%s>." Domain_name.pp domain_name path) ;
         fetch ~capabilities ?want ~host:domain_name path flow store access
           fetch_cfg
         >>= fun () ->
@@ -98,46 +104,56 @@ let multi_ack capabilities =
   | true, false -> `Some
   | false, false -> `None
 
-let fetch uri ?(version= `V1) ?(no_done = false) ?(capabilities = []) want path =
+let fetch uri ?(version = `V1) ?(no_done = false) ?(capabilities = []) want path
+    =
   let access = access lwt path in
   let store = store_inj (Hashtbl.create 0x100) in
-  match version, Uri.scheme uri, Uri.host uri, Uri.path uri with
+  match (version, Uri.scheme uri, Uri.host uri, Uri.path uri) with
   | `V1, Some "git", Some domain_name, path ->
       let fetch_cfg =
-        { Neg.stateless = false; multi_ack = multi_ack capabilities; no_done
-        ; to_hex= to_hex; of_hex= of_hex }
-      in
+        {
+          Neg.stateless = false;
+          multi_ack = multi_ack capabilities;
+          no_done;
+          to_hex;
+          of_hex;
+        } in
       let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
       let fiber =
         let open Lwt.Infix in
         Lwt.catch
           (fun () ->
-            V1.connect ~capabilities path ~resolvers ~want domain_name
-              store access fetch_cfg
+            V1.connect ~capabilities path ~resolvers ~want domain_name store
+              access fetch_cfg
             >>= Lwt.return_ok)
           (function
             | Failure err -> Lwt.return_error (R.msgf "%s" err)
             | exn ->
-              Log.err (fun m -> m "Got an unexpected error: %s" (Printexc.to_string exn)) ;
-              Lwt.return_error (R.msgf "%s" (Printexc.to_string exn)))
-      in
+                Log.err (fun m ->
+                    m "Got an unexpected error: %s" (Printexc.to_string exn)) ;
+                Lwt.return_error (R.msgf "%s" (Printexc.to_string exn))) in
       Log.debug (fun m -> m "Launch the lwt fiber.") ;
       Lwt_main.run fiber
   | _ -> R.error_msgf "Invalid uri: %a" Uri.pp uri
 
-let fetch all thin _depth no_done no_progress level style_renderer repository want path =
+let fetch all thin _depth no_done no_progress level style_renderer repository
+    want path =
   let capabilities =
     let ( $ ) x f = f x in
-    [ `Multi_ack; `Multi_ack_detailed
-    ; `Side_band; `Side_band_64k
-    ; `Ofs_delta ]
-    $ fun caps -> if thin then `Thin_pack :: caps else caps
-    $ fun caps -> if no_progress then `No_progress :: caps else caps
-    $ fun caps -> if no_done then `No_done :: caps else caps in
+    [ `Multi_ack; `Multi_ack_detailed; `Side_band; `Side_band_64k; `Ofs_delta ]
+    $ fun caps ->
+    if thin
+    then `Thin_pack :: caps
+    else
+      caps $ fun caps ->
+      if no_progress
+      then `No_progress :: caps
+      else caps $ fun caps -> if no_done then `No_done :: caps else caps in
   Fmt_tty.setup_std_outputs ?style_renderer () ;
   Logs.set_level level ;
   Logs.set_reporter (Logs_fmt.reporter ~dst:Fmt.stderr ()) ;
-  let want = match all, want with
+  let want =
+    match (all, want) with
     | true, _ -> `All
     | false, _ :: _ -> `Some want
     | false, [] -> `All in
@@ -156,7 +172,8 @@ let reference =
   Arg.conv (parser, pp)
 
 let directory =
-  let parser x = match Fpath.of_string x with
+  let parser x =
+    match Fpath.of_string x with
     | Ok v when Sys.is_directory x && Fpath.is_abs v -> R.ok v
     | Ok v -> R.error_msgf "Invalid directory <%a>" Fpath.pp v
     | Error _ as err -> err in
@@ -168,14 +185,17 @@ let repository =
   Arg.(required & pos 0 (some uri) None & info [] ~docv:"<repository>" ~doc)
 
 let references =
-  let doc = "The remote heads to update from. This is relative to FETCH_DIR (e.g. \"HEAD\", \"refs/heads/master\"). \
-             When unspecified, update from all heads the remote side has." in
+  let doc =
+    "The remote heads to update from. This is relative to FETCH_DIR (e.g. \
+     \"HEAD\", \"refs/heads/master\"). When unspecified, update from all heads \
+     the remote side has." in
   Arg.(value & pos_right 1 reference [] & info [] ~docv:"<refs>..." ~doc)
 
 let local =
   let env = Arg.env_var "FETCH_DIR" in
-  let doc = "Set the path to the repository. This can also be controlled by settings the FETCH_DIR environment variable. \
-             It must be an absolute path." in
+  let doc =
+    "Set the path to the repository. This can also be controlled by settings \
+     the FETCH_DIR environment variable. It must be an absolute path." in
   Arg.(value & opt directory (Fpath.v ".") & info ~env [ "git-dir" ] ~doc)
 
 let verbosity =
@@ -199,8 +219,9 @@ let depth =
   Arg.(value & opt (some int) None & info [ "depth" ] ~doc)
 
 let thin =
-  let doc = "Fetch a \"thin\" pack, which records objects in $(i,deltified) form based on objects not included in \
-             the pack to reduce network traffic." in
+  let doc =
+    "Fetch a \"thin\" pack, which records objects in $(i,deltified) form based \
+     on objects not included in the pack to reduce network traffic." in
   Arg.(value & flag & info [ "thin" ] ~doc)
 
 let all =
@@ -211,13 +232,31 @@ let fetch =
   let doc = "Receive missing objects from another repository." in
   let exits = Term.default_exits in
   let man =
-    [ `S Manpage.s_description
-    ; `P "Invoke $(b,git-upload-pack) on a possibly remote repository and asks it to send objects missing from this repository. \
-          to update named heads. The list of commits available locally is found out by scanning the local refs/ hierarchy and
-          sent to $(b,git-upload-pack) running on the other end."
-    ; `P "This command degenerates to download everything to complete the asked refs from the remote side when the local side does \
-          not have common ancestor commit." ] in
-  Term.(const fetch $ all $ thin $ depth $ no_done $ no_progress $ verbosity $ renderer $ repository $ references $ local),
-  Term.info "fetch" ~doc ~exits ~man
+    [
+      `S Manpage.s_description;
+      `P
+        "Invoke $(b,git-upload-pack) on a possibly remote repository and asks \
+         it to send objects missing from this repository. to update named \
+         heads. The list of commits available locally is found out by scanning \
+         the local refs/ hierarchy and\n\
+        \          sent to $(b,git-upload-pack) running on the other end.";
+      `P
+        "This command degenerates to download everything to complete the asked \
+         refs from the remote side when the local side does not have common \
+         ancestor commit.";
+    ] in
+  ( Term.(
+      const fetch
+      $ all
+      $ thin
+      $ depth
+      $ no_done
+      $ no_progress
+      $ verbosity
+      $ renderer
+      $ repository
+      $ references
+      $ local),
+    Term.info "fetch" ~doc ~exits ~man )
 
 let () = Term.(exit @@ eval fetch)

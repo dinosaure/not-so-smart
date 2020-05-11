@@ -1,8 +1,13 @@
 version = 0.14.1
-break-infix = fit-or-vertical
-parse-docstrings = true
+break-infix=fit-or-vertical
+parse-docstrings=true
 indicate-multiline-delimiters=no
 nested-match=align
 sequence-style=separator
 break-before-in=auto
+break-separators=after
 if-then-else=keyword-first
+align-constructors-decl=true
+sequence-style=separator
+dock-collection-brackets=true
+type-decl=compact

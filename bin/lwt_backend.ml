@@ -8,9 +8,7 @@ let lwt_inj = Lwt_scheduler.inj
 
 type lwt = Lwt_scheduler.t
 
-type error =
-  [ Conduit_lwt.error
-  | `Protocol of Smart.error ]
+type error = [ Conduit_lwt.error | `Protocol of Smart.error ]
 
 let lwt =
   let open Lwt_scheduler in

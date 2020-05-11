@@ -2,9 +2,7 @@ open Neg.Sigs
 
 type lwt
 
-type error =
-  [ Conduit_lwt.error
-  | `Protocol of Smart.error ]
+type error = [ Conduit_lwt.error | `Protocol of Smart.error ]
 
 val lwt_prj : ('a, lwt) io -> 'a Lwt.t
 
