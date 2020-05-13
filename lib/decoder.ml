@@ -37,8 +37,8 @@ let pp_error ppf = function
 type 'err info = { error : 'err; buffer : Bytes.t; committed : int }
 
 type ('v, 'err) state =
-  | Done of 'v
-  | Read of {
+  | Done  of 'v
+  | Read  of {
       buffer : Bytes.t;
       off : int;
       len : int;

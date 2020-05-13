@@ -11,25 +11,169 @@ end)
 
 type git = Store.t
 
-type hex = string
-
 type reference = string
 
 let store_prj = Store.prj
 
 let store_inj = Store.inj
 
-let to_hex x = x
-
-let of_hex x = x
-
 let failwithf fmt = Fmt.kstrf (fun err -> raise (Failure err)) fmt
 
-let exists path uid =
+let kind_of_object path uid =
+  let open Bos in
+  OS.Dir.set_current path >>= fun () ->
+  OS.Cmd.run_out ~err:OS.Cmd.err_null Cmd.(v "git" % "cat-file" % "-t" % uid)
+  |> OS.Cmd.out_string ~trim:true
+  |> function
+  | Ok ("commit", (_, `Exited 0)) -> R.ok (Some `Commit)
+  | Ok ("tree", (_, `Exited 0)) -> R.ok (Some `Tree)
+  | Ok ("tag", (_, `Exited 0)) -> R.ok (Some `Tag)
+  | Ok ("blob", (_, `Exited 0)) -> R.ok (Some `Blob)
+  | Ok _ -> R.ok None
+  | Error err ->
+      Log.err (fun m -> m "Got an error [kind_of_object]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let parents_of_commit path uid =
+  let open Bos in
+  OS.Dir.set_current path >>= fun () ->
+  OS.Cmd.run_out ~err:OS.Cmd.err_null
+    Cmd.(v "git" % "show" % "-s" % "--pretty=%P" % uid)
+  |> OS.Cmd.out_lines ~trim:true
+  |> function
+  | Ok (uids, (_, `Exited 0)) -> R.ok uids
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m -> m "Got an error [parents_of_commits]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let root_tree_of_commit path uid =
+  let open Bos in
+  OS.Dir.set_current path >>= fun () ->
+  OS.Cmd.run_out ~err:OS.Cmd.err_null
+    Cmd.(v "git" % "show" % "-s" % "--pretty=%T" % uid)
+  |> OS.Cmd.out_string ~trim:true
+  |> function
+  | Ok (uid, (_, `Exited 0)) -> R.ok uid
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m ->
+          m "Got an error [root_tree_of_commits]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let commit_of_tag path uid =
+  let open Bos in
+  OS.Dir.set_current path >>= fun () ->
+  OS.Cmd.run_out ~err:OS.Cmd.err_null
+    Cmd.(v "git" % "rev-parse" % Fmt.strf "%s^{commit}" uid)
+  |> OS.Cmd.out_string ~trim:true
+  |> function
+  | Ok (uid, (_, `Exited 0)) -> R.ok uid
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m -> m "Got an error [commit_of_tag]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let preds_of_tree path uid =
+  let uid_of_line line =
+    match Astring.String.cuts ~sep:" " line with
+    | _ :: _ :: uid_and_name -> (
+        let uid_and_name = String.concat " " uid_and_name in
+        match Astring.String.cut ~sep:"\t" uid_and_name with
+        | Some (uid, _) -> R.ok uid
+        | None -> R.error_msgf "Invalid line: %S" line)
+    | _ -> R.error_msgf "Invalid line: %S" line in
+  let open Bos in
+  OS.Dir.set_current path >>= fun () ->
+  OS.Cmd.run_out ~err:OS.Cmd.err_null Cmd.(v "git" % "ls-tree" % uid)
+  |> OS.Cmd.out_lines ~trim:true
+  |> function
+  | Ok (lines, (_, `Exited 0)) ->
+      let uids = List.map uid_of_line lines in
+      List.fold_left
+        (fun a x ->
+          a >>= fun a ->
+          x >>= fun x -> R.ok (x :: a))
+        (Ok []) uids
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m -> m "Got an error [preds_of_tree]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let timestamp_of_commit path uid =
   let open Bos in
   OS.Dir.set_current path >>= fun () ->
   OS.Cmd.run_out ~err:OS.Cmd.err_null
     Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % uid)
+  |> OS.Cmd.out_string ~trim:true
+  |> function
+  | Ok (ts, (_, `Exited 0)) -> R.ok (Int64.of_string ts)
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m -> m "Got an error [timestamp_of_commit]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let get_object_for_packer path (uid : Uid.t) =
+  kind_of_object path (uid :> string) >>= function
+  | Some `Commit ->
+      parents_of_commit path (uid :> string) >>| List.map Uid.of_hex
+      >>= fun preds ->
+      root_tree_of_commit path (uid :> string) >>| Uid.of_hex >>= fun root ->
+      timestamp_of_commit path (uid :> string) >>= fun ts ->
+      R.ok (Some (Pck.make ~kind:Pck.commit { Pck.root; Pck.preds } ~ts uid))
+  | Some `Tree ->
+      preds_of_tree path (uid :> string) >>| List.map Uid.of_hex >>= fun uids ->
+      R.ok (Some (Pck.make ~kind:Pck.tree uids uid))
+  | Some `Blob -> R.ok (Some (Pck.make ~kind:Pck.blob Pck.Leaf uid))
+  | Some `Tag ->
+      commit_of_tag path (uid :> string) >>| Uid.of_hex >>= fun commit ->
+      R.ok (Some (Pck.make ~kind:Pck.tag commit uid))
+  | None -> R.ok None
+
+let get_object_for_packer { return; _ } path uid store =
+  let store = Store.prj store in
+  match Hashtbl.find store uid with
+  | v -> return (Some v)
+  | exception Not_found ->
+  match get_object_for_packer path uid with
+  | Ok (Some v) ->
+      Hashtbl.replace store uid v ;
+      return (Some v)
+  | Ok None -> return None
+  | Error err ->
+      Log.warn (fun m -> m "Got an error [exists]: %a" R.pp_msg err) ;
+      return None
+
+let get_commit_for_negotiation path (uid : Uid.t) =
+  let open Bos in
+  OS.Dir.set_current path >>= fun () ->
+  OS.Cmd.run_out ~err:OS.Cmd.err_null
+    Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % (uid :> string))
   |> OS.Cmd.out_string ~trim:true
   >>= function
   | ts, (_, `Exited 0) ->
@@ -42,24 +186,19 @@ let parents :
     type s.
     s scheduler ->
     Fpath.t ->
-    hex ->
-    (hex, hex * int ref * int64, git) store ->
-    ((hex * int ref * int64) list, s) io =
+    Uid.t ->
+    (Uid.t, Uid.t * int ref * int64, git) store ->
+    ((Uid.t * int ref * int64) list, s) io =
  fun { Neg.Sigs.return; _ } path uid store ->
   let store = Store.prj store in
-  let fiber =
-    let open Bos in
-    OS.Dir.set_current path >>= fun () ->
-    OS.Cmd.run_out ~err:OS.Cmd.err_null
-      Cmd.(v "git" % "show" % "-s" % "--pretty=%P" % uid)
-    |> OS.Cmd.out_lines ~trim:true in
-  match fiber with
-  | Ok (uids, (_, `Exited 0)) -> (
+  match parents_of_commit path (uid :> string) with
+  | Ok uids -> (
       let map uid =
+        let uid = Uid.of_hex uid in
         match Hashtbl.find store uid with
         | obj -> obj
         | exception Not_found ->
-        match exists path uid with
+        match get_commit_for_negotiation path uid with
         | Ok (Some obj) ->
             Hashtbl.add store uid obj ;
             obj
@@ -69,12 +208,6 @@ let parents :
         let objs = List.map map uids in
         return objs
       with Failure err -> failwithf "%s" err)
-  | Ok (_, (run_info, _)) ->
-      Log.err
-        Bos.(
-          fun m ->
-            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
-      failwithf "Object <%s> not found" uid
   | Error err ->
       Log.err (fun m -> m "Got an error [parents]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err
@@ -84,8 +217,8 @@ let deref :
     s scheduler ->
     Fpath.t ->
     reference ->
-    (hex, hex * int ref * int64, git) store ->
-    (hex option, s) io =
+    (Uid.t, Uid.t * int ref * int64, git) store ->
+    (Uid.t option, s) io =
  fun { Neg.Sigs.return; _ } path reference _ ->
   let fiber =
     let open Bos in
@@ -94,7 +227,7 @@ let deref :
       Cmd.(v "git" % "show-ref" % "--hash" % reference)
     |> OS.Cmd.out_string ~trim:true in
   match fiber with
-  | Ok (uid, (_, `Exited 0)) -> return (Some uid)
+  | Ok (uid, (_, `Exited 0)) -> return (Some (Uid.of_hex uid))
   | Ok _ -> return None
   | Error err ->
       Log.err (fun m -> m "Got an error [deref]: %a" R.pp_msg err) ;
@@ -104,7 +237,7 @@ let locals :
     type s.
     s scheduler ->
     Fpath.t ->
-    (hex, hex * int ref * int64, git) store ->
+    (Uid.t, Uid.t * int ref * int64, git) store ->
     (reference list, s) io =
  fun { Neg.Sigs.return; _ } path _ ->
   let fiber =
@@ -129,12 +262,12 @@ let locals :
       Log.err (fun m -> m "Got an error [local]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err
 
-let exists { Neg.Sigs.return; _ } path uid store =
+let get_commit_for_negotiation { Sigs.return; _ } path uid store =
   let store = Store.prj store in
   match Hashtbl.find store uid with
   | v -> return (Some v)
   | exception Not_found ->
-  match exists path uid with
+  match get_commit_for_negotiation path uid with
   | Ok (Some obj) ->
       Hashtbl.replace store uid obj ;
       return (Some obj)
@@ -147,11 +280,10 @@ let access :
     type s.
     s scheduler ->
     Fpath.t ->
-    (hex, reference, hex * int ref * int64, git, s) access =
+    (Uid.t, reference, Uid.t * int ref * int64, git, s) access =
  fun scheduler path ->
-  let exists uid store = exists scheduler path uid store in
   {
-    exists;
+    exists = get_commit_for_negotiation scheduler path;
     parents = parents scheduler path;
     deref = deref scheduler path;
     locals = locals scheduler path;

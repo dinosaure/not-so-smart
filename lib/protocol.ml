@@ -1,9 +1,9 @@
 let ( <.> ) f g x = f (g x)
 
 module Advertised_refs = struct
-  type ('hash, 'reference) t = {
-    shallows : 'hash list;
-    refs : ('hash * 'reference * bool) list;
+  type ('uid, 'reference) t = {
+    shallows : 'uid list;
+    refs : ('uid * 'reference * bool) list;
     capabilities : Capability.t list;
     version : int;
   }
@@ -33,6 +33,7 @@ module Advertised_refs = struct
     List.fold_left fold [] refs
 
   let refs { refs; _ } = refs
+
   let capabilities { capabilities; _ } = capabilities
 
   let pp ppf { shallows; refs; capabilities; version } =
@@ -65,6 +66,10 @@ module Proto_request = struct
     let host = (host, port) in
     { request_command = `Upload_pack; host; version; path }
 
+  let receive_pack ~host ?port ?(version = 1) path =
+    let host = (host, port) in
+    { request_command = `Receive_pack; host; version; path }
+
   let pp ppf { path; host; request_command; version } =
     let pp_request_command ppf = function
       | `Upload_pack -> Fmt.pf ppf "git-upload-pack"
@@ -81,20 +86,21 @@ module Proto_request = struct
 end
 
 module Want = struct
-  type ('hash, 'reference) t = {
-    wants : 'hash * 'hash list;
-    shallows : 'hash list;
+  type ('uid, 'reference) t = {
+    wants : 'uid * 'uid list;
+    shallows : 'uid list;
     deepen :
       [ `Depth of int | `Timestamp of int64 | `Not of 'reference ] option;
     filter : Filter.t option;
+    capabilities : Capability.t list;
   }
 
-  let want ?deepen ?filter ?(shallows = []) ?(others = []) hash =
-    { wants = (hash, others); shallows; deepen; filter }
+  let want ~capabilities ?deepen ?filter ?(shallows = []) ?(others = []) hash =
+    { wants = (hash, others); shallows; deepen; filter; capabilities }
 end
 
 module Result = struct
-  type 'hash t = NAK | ACK of 'hash
+  type 'uid t = NAK | ACK of 'uid
 
   let pp ppf = function
     | NAK -> Fmt.pf ppf "NAK"
@@ -102,11 +108,11 @@ module Result = struct
 end
 
 module Negotiation = struct
-  type 'hash t =
-    | ACK of 'hash
-    | ACK_continue of 'hash
-    | ACK_ready of 'hash
-    | ACK_common of 'hash
+  type 'uid t =
+    | ACK          of 'uid
+    | ACK_continue of 'uid
+    | ACK_ready    of 'uid
+    | ACK_common   of 'uid
     | NAK
 
   let is_common = function ACK_common _ -> true | _ -> false
@@ -130,8 +136,40 @@ module Negotiation = struct
     | NAK -> NAK
 end
 
+module Commands = struct
+  type ('uid, 'ref) command =
+    | Create of 'uid * 'ref
+    | Delete of 'uid * 'ref
+    | Update of 'uid * 'uid * 'ref
+
+  type ('uid, 'ref) t = {
+    capabilities : Capability.t list;
+    commands : ('uid, 'ref) command * ('uid, 'ref) command list;
+  }
+
+  let create uid reference = Create (uid, reference)
+
+  let delete uid reference = Delete (uid, reference)
+
+  let update a b reference = Update (a, b, reference)
+
+  let v ~capabilities ?(others = []) command =
+    { capabilities; commands = (command, others) }
+
+  let commands { commands = command, others; _ } = command :: others
+end
+
 module Shallow = struct
-  type 'hash t = Shallow of 'hash | Unshallow of 'hash
+  type 'uid t = Shallow of 'uid | Unshallow of 'uid
+end
+
+module Status = struct
+  type 'ref t = {
+    result : (unit, string) result;
+    commands : ('ref, 'ref * string) result list;
+  }
+
+  let to_result { result; _ } = result
 end
 
 module Decoder = struct
@@ -144,7 +182,9 @@ module Decoder = struct
     | `Invalid_shallow of string
     | `Invalid_negotiation_result of string
     | `Invalid_side_band of string
-    | `Invalid_ack of string ]
+    | `Invalid_ack of string
+    | `Invalid_result of string
+    | `Invalid_command_result of string ]
 
   let pp_error ppf = function
     | #Decoder.error as err -> Decoder.pp_error ppf err
@@ -155,6 +195,9 @@ module Decoder = struct
         Fmt.pf ppf "Invalid negotiation result (%S)" raw
     | `Invalid_side_band raw -> Fmt.pf ppf "Invalid side-band (%S)" raw
     | `Invalid_ack raw -> Fmt.pf ppf "Invalid ack (%S)" raw
+    | `Invalid_result raw -> Fmt.pf ppf "Invalid result (%S)" raw
+    | `Invalid_command_result raw ->
+        Fmt.pf ppf "Invalid result command (%S)" raw
 
   let rec prompt_pkt k decoder =
     if at_least_one_pkt decoder
@@ -187,6 +230,10 @@ module Decoder = struct
   let v_nak = String.Sub.of_string "NAK"
 
   let v_ack = String.Sub.of_string "ACK"
+
+  let v_ok = String.Sub.of_string "ok"
+
+  let v_ng = String.Sub.of_string "ng"
 
   let decode_advertised_refs decoder =
     let decode_shallows advertised_refs decoder =
@@ -328,10 +375,8 @@ module Decoder = struct
     in
     prompt_pkt k decoder
 
-  let decode_pack ~capabilities ~push_pack ~push_stdout ~push_stderr decoder =
-    let side_band =
-      List.exists (( = ) `Side_band) capabilities
-      || List.exists (( = ) `Side_band_64k) capabilities in
+  let decode_pack ?(side_band = false) ~push_pack ~push_stdout ~push_stderr
+      decoder =
     let rec with_side_band decoder =
       let v = peek_pkt decoder in
       match String.Sub.head v with
@@ -417,6 +462,64 @@ module Decoder = struct
         | _ -> fail decoder (`Invalid_ack (String.Sub.to_string pkt))
       else assert false in
     prompt_pkt k decoder
+
+  let rec bind x ~f =
+    match x with
+    | Decoder.Done v -> f v
+    | Decoder.Read { buffer; off; len; continue } ->
+        let continue len = bind (continue len) ~f in
+        Decoder.Read { buffer; off; len; continue }
+    | Decoder.Error _ as err -> err
+
+  let ( >>= ) x f = bind x ~f
+
+  let decode_status decoder =
+    let command pkt =
+      match String.Sub.cuts ~sep:v_space pkt with
+      | res :: reference :: rest -> (
+          match String.Sub.to_string res with
+          | "ok" -> Stdlib.Ok (Stdlib.Ok (String.Sub.to_string reference))
+          | "ng" ->
+              let err = String.Sub.(to_string (concat ~sep:v_space rest)) in
+              let reference = String.Sub.to_string reference in
+              Stdlib.Ok (Stdlib.Error (reference, err))
+          | _ ->
+              Stdlib.Error (`Invalid_command_result (String.Sub.to_string pkt)))
+      | _ -> Stdlib.Error (`Invalid_command_result (String.Sub.to_string pkt))
+    in
+
+    let commands decoder =
+      let rec go acc decoder =
+        let pkt = peek_pkt decoder in
+        if String.Sub.length pkt = 0
+        then return (List.rev acc) decoder
+        else if String.Sub.is_prefix ~affix:v_ok pkt
+                || String.Sub.is_prefix ~affix:v_ng pkt
+        then
+          match command pkt with
+          | Ok x ->
+              junk_pkt decoder ;
+              prompt_pkt (go (x :: acc)) decoder
+          | Error err -> fail decoder err
+        else fail decoder (`Invalid_command_result (String.Sub.to_string pkt))
+      in
+      prompt_pkt (go []) decoder in
+
+    let result decoder =
+      let pkt = peek_pkt decoder in
+      match String.Sub.cut ~sep:v_space pkt with
+      | None -> fail decoder (`Invalid_result (String.Sub.to_string pkt))
+      | Some (_unpack, res) ->
+      match String.Sub.to_string res with
+      | "ok" ->
+          junk_pkt decoder ;
+          return (Stdlib.Ok ()) decoder
+      | err ->
+          junk_pkt decoder ;
+          return (Stdlib.Error err) decoder in
+    prompt_pkt result decoder >>= fun result ->
+    prompt_pkt commands decoder >>= fun commands ->
+    return { Status.result; Status.commands } decoder
 end
 
 module Encoder = struct
@@ -479,8 +582,8 @@ module Encoder = struct
         write_zero encoder) in
     delayed_write_pkt k kdone encoder
 
-  let encode_want ~capabilities encoder
-      { Want.wants = first, others; shallows; deepen; filter } =
+  let encode_want encoder
+      { Want.capabilities; wants = first, others; shallows; deepen; filter } =
     let filter encoder =
       match filter with Some _ -> . | None -> kflush encoder in
 
@@ -560,4 +663,64 @@ module Encoder = struct
     Encoder.write encoder packet ;
     let len = encoder.pos - pos in
     Bytes.blit_string (Fmt.strf "%04X" len) 0 encoder.payload pos 4
+
+  let write_command encoder = function
+    | Commands.Create (uid, r) ->
+        let zero_id = String.make (String.length uid) '0' in
+        write encoder "create " ;
+        write encoder zero_id ;
+        write_space encoder ;
+        write encoder uid ;
+        write_space encoder ;
+        write encoder r
+    | Commands.Delete (uid, r) ->
+        let zero_id = String.make (String.length uid) '0' in
+        write encoder "delete " ;
+        write encoder uid ;
+        write_space encoder ;
+        write encoder zero_id ;
+        write_space encoder ;
+        write encoder r
+    | Commands.Update (a, b, r) ->
+        write encoder "update " ;
+        write encoder a ;
+        write_space encoder ;
+        write encoder b ;
+        write_space encoder ;
+        write encoder r
+
+  let encode_commands encoder
+      { Commands.capabilities; commands = first, others } =
+    let others encoder =
+      let command c encoder = write_command encoder c in
+      let rec go others encoder =
+        match others with
+        | [] -> kflush encoder
+        | head :: tail -> delayed_write_pkt (command head) (go tail) encoder
+      in
+      go others encoder in
+    let first encoder =
+      write_command encoder first ;
+      let rec go = function
+        | [] -> ()
+        | [ capability ] -> write encoder (Capability.to_string capability)
+        | head :: tail ->
+            write encoder (Capability.to_string head) ;
+            write_space encoder ;
+            go tail in
+      write_zero encoder ;
+      if List.length capabilities > 0 then go capabilities in
+    delayed_write_pkt first others encoder
+
+  (* TODO(dinosaure): handle HTTP/stateless and side-band. *)
+  let encode_pack ?side_band:(_ = false) ?stateless:(_ = false) encoder buffer
+      off len =
+    let rec go buffer off max encoder =
+      if max = 0
+      then flush kdone encoder
+      else
+        let len = min max (Bytes.length encoder.payload - encoder.pos) in
+        Bytes.blit_string buffer off encoder.payload encoder.pos len ;
+        flush (go buffer (off + len) (max - len)) encoder in
+    go buffer off len encoder
 end

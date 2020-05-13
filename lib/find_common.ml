@@ -1,8 +1,9 @@
 open Sigs
 
-let ( <.> ) f g = fun x -> f (g x)
+let ( <.> ) f g x = f (g x)
 
 let src = Logs.Src.create "find-common"
+
 module Log = (val Logs.src_log src : Logs.LOG)
 
 let _initial_flush = 16
@@ -14,7 +15,9 @@ let _large_flush = 16384
 let _pipe_safe_flush = 32
 
 type ('uid, 'g, 's) exists =
-  ('uid, ('uid * int ref * int64), 'g) store -> 'uid -> (('uid * int ref) option, 's) io
+  ('uid, 'uid * int ref * int64, 'g) store ->
+  'uid ->
+  (('uid * int ref) option, 's) io
 
 type ('a, 's) raise = exn -> ('a, 's) io
 
@@ -92,7 +95,8 @@ let tips { bind; return } { exists; deref; locals; _ } store negotiator =
   locals store >>= go
 
 let find_common ({ bind; return } as scheduler) io flow
-    ({ stateless; no_done; of_hex; to_hex; _ } as cfg) access store negotiator ctx refs =
+    ({ stateless; no_done; of_hex; to_hex; _ } as cfg) access store negotiator
+    ctx refs =
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
   let fold_left_s ~f a l =
@@ -114,7 +118,8 @@ let find_common ({ bind; return } as scheduler) io flow
         Smart.(
           let uid = (to_hex <.> fst) uid in
           let others = List.map (to_hex <.> fst) others in
-          send ctx want (Want.want uid ~others))
+          let capabilities, _ = Smart.capabilities ctx in
+          send ctx want (Want.want ~capabilities uid ~others))
       >>= fun () ->
       let in_vain = ref 0 in
       let count = ref 0 in
@@ -146,14 +151,15 @@ let find_common ({ bind; return } as scheduler) io flow
                 >>= fun _shallows ->
                 let rec loop () =
                   run scheduler raise io flow Smart.(recv ctx ack)
-                  >>| Smart.Negotiation.map ~f:of_hex >>= fun ack ->
+                  >>| Smart.Negotiation.map ~f:of_hex
+                  >>= fun ack ->
                   match ack with
                   | Smart.Negotiation.NAK -> return `Continue
                   | Smart.Negotiation.ACK _ ->
                       flushes := 0 ;
                       cfg.multi_ack <- `None ;
                       (* XXX(dinosaure): [multi_ack] supported by the client but it
-                         is not supported by the server. *)
+                         is not supported by the server. TODO: use [Context.shared]. *)
                       retval := 0 ;
                       return `Done
                   | Smart.Negotiation.ACK_common uid
@@ -222,7 +228,9 @@ let find_common ({ bind; return } as scheduler) io flow
       let rec go () =
         if !flushes > 0 || cfg.multi_ack = `Some || cfg.multi_ack = `Detailed
         then (
-          run scheduler raise io flow Smart.(recv ctx ack) >>| Smart.Negotiation.map ~f:of_hex >>= fun ack ->
+          run scheduler raise io flow Smart.(recv ctx ack)
+          >>| Smart.Negotiation.map ~f:of_hex
+          >>= fun ack ->
           match ack with
           | Smart.Negotiation.ACK _ -> return 0
           | Smart.Negotiation.ACK_common _ | Smart.Negotiation.ACK_continue _

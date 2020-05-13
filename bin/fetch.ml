@@ -49,22 +49,22 @@ module V1 = struct
       let* v = recv ctx advertised_refs in
       Log.debug (fun m -> m "Got %a" Smart.Advertised_refs.pp v) ;
       let uids = references refs (Smart.Advertised_refs.refs v) in
-      (* update ctx (Smart.Advertised_refs.capabilities v) ; *)
+      update ctx (Smart.Advertised_refs.capabilities v) ;
       return uids in
     let pack ctx =
       let open Smart in
+      let side_band =
+        Smart.shared `Side_band ctx || Smart.shared `Side_band_64k ctx in
       recv ctx
-        (pack ~push_stdout ~push_stderr:(Fmt.epr "%s\n%!") ~push_pack:ignore)
-    in
+        (recv_pack ~side_band ~push_stdout ~push_stderr:(Fmt.epr "%s\n%!")
+           ~push_pack:ignore) in
     let ctx = Smart.make capabilities in
-    let compare (a : hex) (b : hex) =
-      String.compare (a :> string) (b :> string) in
-    let negotiator = Neg.negotiator ~compare in
+    let negotiator = Neg.negotiator ~compare:Uid.compare in
     let open Lwt.Infix in
     Neg.tips lwt access store negotiator |> lwt_prj >>= fun () ->
     Neg.run lwt lwt_fail lwt_io flow (prelude ctx) |> lwt_prj >>= fun uids ->
     (* XXX(dinosaure): unsafe part. *)
-    let uids = List.map of_hex uids in
+    let uids = List.map Uid.of_hex uids in
     Neg.find_common lwt lwt_io flow fetch_cfg access store negotiator ctx uids
     |> lwt_prj
     >>= fun res ->
@@ -115,8 +115,8 @@ let fetch uri ?(version = `V1) ?(no_done = false) ?(capabilities = []) want path
           Neg.stateless = false;
           multi_ack = multi_ack capabilities;
           no_done;
-          to_hex;
-          of_hex;
+          to_hex = Uid.to_hex;
+          of_hex = Uid.of_hex;
         } in
       let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
       let fiber =
@@ -238,8 +238,8 @@ let fetch =
         "Invoke $(b,git-upload-pack) on a possibly remote repository and asks \
          it to send objects missing from this repository. to update named \
          heads. The list of commits available locally is found out by scanning \
-         the local refs/ hierarchy and\n\
-        \          sent to $(b,git-upload-pack) running on the other end.";
+         the local refs/ hierarchy and sent to $(b,git-upload-pack) running on \
+         the other end.";
       `P
         "This command degenerates to download everything to complete the asked \
          refs from the remote side when the local side does not have common \

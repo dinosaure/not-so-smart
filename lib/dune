@@ -4,6 +4,16 @@
  (libraries domain-name astring fmt))
 
 (library
+ (name sigs)
+ (modules sigs)
+ (libraries cstruct))
+
+(library
  (name neg)
- (modules neg sigs find_common default)
- (libraries logs psq cstruct smart))
+ (modules neg find_common default)
+ (libraries sigs logs psq cstruct smart))
+
+(library
+ (name pck)
+ (modules pck)
+ (libraries sigs psq))

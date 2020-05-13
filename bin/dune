@@ -1,4 +1,4 @@
 (executable
  (name fetch)
- (libraries conduit-lwt-unix conduit-lwt-unix.tcp bos smart neg hxd.string
+ (libraries conduit-lwt-unix conduit-lwt-unix.tcp bos smart neg pck carton
    uri fmt.tty fmt.cli logs.fmt logs.cli cmdliner))

@@ -7,6 +7,8 @@ module Want = Protocol.Want
 module Result = Protocol.Result
 module Negotiation = Protocol.Negotiation
 module Shallow = Protocol.Shallow
+module Commands = Protocol.Commands
+module Status = Protocol.Status
 
 module Witness = struct
   type 'a send =
@@ -14,11 +16,19 @@ module Witness = struct
     | Want : (string, string) Want.t send
     | Done : unit send
     | Flush : unit send
+    | Commands : (string, string) Commands.t send
+    | Send_pack     : {
+        side_band : bool;
+        stateless : bool;
+      }
+        -> (string * int * int) send
 
   type 'a recv =
     | Advertised_refs : (string, string) Advertised_refs.t recv
     | Result : string Result.t recv
-    | Pack : {
+    | Status : string Status.t recv
+    | Recv_pack       : {
+        side_band : bool;
         push_pack : string -> unit;
         push_stdout : string -> unit;
         push_stderr : string -> unit;
@@ -38,17 +48,18 @@ module Value = struct
   type error = [ Protocol.Encoder.error | Protocol.Decoder.error ]
 
   let encode :
-      type a.
-      capabilities:Capability.t list ->
-      encoder ->
-      a send ->
-      a ->
-      (unit, [> Encoder.error ]) State.t =
-   fun ~capabilities encoder w v ->
+      type a. encoder -> a send -> a -> (unit, [> Encoder.error ]) State.t =
+   fun encoder w v ->
     let fiber : a send -> [> Encoder.error ] Encoder.state = function
       | Proto_request -> Protocol.Encoder.encode_proto_request encoder v
-      | Want -> Protocol.Encoder.encode_want ~capabilities encoder v
+      | Want -> Protocol.Encoder.encode_want encoder v
       | Done -> Protocol.Encoder.encode_done encoder
+      | Commands -> Protocol.Encoder.encode_commands encoder v
+      | Send_pack { side_band; stateless } ->
+          (* TODO(dinosaure): avoid allocation. *)
+          let buffer, off, len = v in
+          Protocol.Encoder.encode_pack ~side_band ~stateless encoder buffer off
+            len
       | Flush -> Protocol.Encoder.encode_flush encoder in
     let rec go = function
       | Encoder.Done -> State.Return ()
@@ -57,13 +68,8 @@ module Value = struct
       | Encoder.Error err -> State.Error (err :> error) in
     (go <.> fiber) w
 
-  let decode :
-      type a.
-      capabilities:Capability.t list ->
-      decoder ->
-      a recv ->
-      (a, [> Decoder.error ]) State.t =
-   fun ~capabilities decoder w ->
+  let decode : type a. decoder -> a recv -> (a, [> Decoder.error ]) State.t =
+   fun decoder w ->
     let rec go = function
       | Decoder.Done v -> State.Return v
       | Decoder.Read { buffer; off; len; continue } ->
@@ -72,25 +78,30 @@ module Value = struct
     match w with
     | Advertised_refs -> go (Protocol.Decoder.decode_advertised_refs decoder)
     | Result -> go (Protocol.Decoder.decode_result decoder)
-    | Pack { push_pack; push_stdout; push_stderr } ->
+    | Recv_pack { side_band; push_pack; push_stdout; push_stderr } ->
         go
-          (Protocol.Decoder.decode_pack ~capabilities ~push_pack ~push_stdout
+          (Protocol.Decoder.decode_pack ~side_band ~push_pack ~push_stdout
              ~push_stderr decoder)
     | Ack -> go (Protocol.Decoder.decode_negotiation decoder)
+    | Status -> go (Protocol.Decoder.decode_status decoder)
     | Shallows -> go (Protocol.Decoder.decode_shallows decoder)
 end
 
 type ('a, 'err) t = ('a, 'err) State.t =
-  | Read of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
-  | Write of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
+  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
+  | Write  of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
   | Return of 'a
-  | Error of 'err
+  | Error  of 'err
 
 type context = State.Context.t
 
 let make capabilities = State.Context.make capabilities
 
 let update ctx capabilities = State.Context.update ctx capabilities
+
+let shared ctx capability = State.Context.shared ctx capability
+
+let capabilities ctx = State.Context.capabilities ctx
 
 include Witness
 
@@ -104,14 +115,22 @@ let negotiation_done = Done
 
 let negotiation_result = Result
 
-let pack ?(push_stdout = ignore) ?(push_stderr = ignore) ~push_pack =
-  Pack { push_pack; push_stdout; push_stderr }
+let commands = Commands
+
+let recv_pack ?(side_band = false) ?(push_stdout = ignore)
+    ?(push_stderr = ignore) ~push_pack =
+  Recv_pack { side_band; push_pack; push_stdout; push_stderr }
+
+let status = Status
 
 let flush = Flush
 
 let ack = Ack
 
 let shallows = Shallows
+
+let send_pack ?(stateless = false) side_band =
+  Send_pack { side_band; stateless }
 
 include State.Scheduler (State.Context) (Value)
 

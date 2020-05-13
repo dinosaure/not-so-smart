@@ -1,7 +1,6 @@
 module Sigs = Sigs
 module Find_common = Find_common
 module Default = Default
-
 open Find_common
 
 type nonrec ('a, 's) raise = ('a, 's) raise
@@ -17,6 +16,9 @@ type nonrec 'uid configuration = 'uid configuration = {
 type 'uid negotiator = 'uid Default.t
 
 let negotiator ~compare = Default.make ~compare
+
 let run = run
+
 let find_common = find_common
+
 let tips = tips

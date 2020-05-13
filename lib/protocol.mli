@@ -31,12 +31,16 @@ module Proto_request : sig
 
   val upload_pack :
     host:[ `host ] Domain_name.t -> ?port:int -> ?version:int -> string -> t
+
+  val receive_pack :
+    host:[ `host ] Domain_name.t -> ?port:int -> ?version:int -> string -> t
 end
 
 module Want : sig
   type ('uid, 'reference) t
 
   val want :
+    capabilities:Capability.t list ->
     ?deepen:[ `Depth of int | `Timestamp of int64 | `Not of 'reference ] ->
     ?filter:Filter.t ->
     ?shallows:'uid list ->
@@ -53,10 +57,10 @@ end
 
 module Negotiation : sig
   type 'uid t = private
-    | ACK of 'uid
+    | ACK          of 'uid
     | ACK_continue of 'uid
-    | ACK_ready of 'uid
-    | ACK_common of 'uid
+    | ACK_ready    of 'uid
+    | ACK_common   of 'uid
     | NAK
 
   val is_common : 'uid t -> bool
@@ -70,8 +74,40 @@ module Negotiation : sig
   val map : f:('a -> 'b) -> 'a t -> 'b t
 end
 
+module Commands : sig
+  type ('uid, 'ref) command = private
+    | Create of 'uid * 'ref
+    | Delete of 'uid * 'ref
+    | Update of 'uid * 'uid * 'ref
+
+  type ('uid, 'ref) t
+
+  val create : 'uid -> 'ref -> ('uid, 'ref) command
+
+  val delete : 'uid -> 'ref -> ('uid, 'ref) command
+
+  val update : 'uid -> 'uid -> 'ref -> ('uid, 'ref) command
+
+  val v :
+    capabilities:Capability.t list ->
+    ?others:('uid, 'ref) command list ->
+    ('uid, 'ref) command ->
+    ('uid, 'ref) t
+
+  val commands : ('uid, 'ref) t -> ('uid, 'ref) command list
+end
+
 module Shallow : sig
   type 'uid t = private Shallow of 'uid | Unshallow of 'uid
+end
+
+module Status : sig
+  type 'ref t = private {
+    result : (unit, string) result;
+    commands : ('ref, 'ref * string) result list;
+  }
+
+  val to_result : 'string t -> (unit, string) result
 end
 
 module Decoder : sig
@@ -83,7 +119,9 @@ module Decoder : sig
     | `Invalid_shallow of string
     | `Invalid_negotiation_result of string
     | `Invalid_side_band of string
-    | `Invalid_ack of string ]
+    | `Invalid_ack of string
+    | `Invalid_result of string
+    | `Invalid_command_result of string ]
 
   val pp_error : error Fmt.t
 
@@ -93,7 +131,7 @@ module Decoder : sig
   val decode_result : decoder -> (string Result.t, [> error ]) state
 
   val decode_pack :
-    capabilities:Capability.t list ->
+    ?side_band:bool ->
     push_pack:(string -> unit) ->
     push_stdout:(string -> unit) ->
     push_stderr:(string -> unit) ->
@@ -103,6 +141,8 @@ module Decoder : sig
   val decode_negotiation : decoder -> (string Negotiation.t, [> error ]) state
 
   val decode_shallows : decoder -> (string Shallow.t list, [> error ]) state
+
+  val decode_status : decoder -> (string Status.t, [> error ]) state
 end
 
 module Encoder : sig
@@ -114,15 +154,22 @@ module Encoder : sig
 
   val encode_proto_request : encoder -> Proto_request.t -> error state
 
-  val encode_want :
-    capabilities:Capability.t list ->
-    encoder ->
-    (string, string) Want.t ->
-    error state
+  val encode_want : encoder -> (string, string) Want.t -> error state
 
   val encode_done : encoder -> error state
 
   val encode_flush : encoder -> error state
+
+  val encode_commands : encoder -> (string, string) Commands.t -> error state
+
+  val encode_pack :
+    ?side_band:bool ->
+    ?stateless:bool ->
+    encoder ->
+    string ->
+    int ->
+    int ->
+    error state
 
   val unsafe_encode_packet : encoder -> packet:string -> unit
 end

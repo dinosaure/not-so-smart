@@ -1,8 +1,8 @@
 type ('a, 'err) t =
-  | Read of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
-  | Write of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
+  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
+  | Write  of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
   | Return of 'a
-  | Error of 'err
+  | Error  of 'err
 
 module type CONTEXT = sig
   type t
@@ -17,7 +17,7 @@ module type CONTEXT = sig
 
   val decoder : t -> decoder
 
-  val capabilities : t -> Capability.t list
+  val shared : Capability.t -> t -> bool
 end
 
 module type S = sig
@@ -31,15 +31,9 @@ module type S = sig
 
   type decoder
 
-  val encode :
-    capabilities:Capability.t list ->
-    encoder ->
-    'a send ->
-    'a ->
-    (unit, error) t
+  val encode : encoder -> 'a send -> 'a -> (unit, error) t
 
-  val decode :
-    capabilities:Capability.t list -> decoder -> 'a recv -> ('a, error) t
+  val decode : decoder -> 'a recv -> ('a, error) t
 end
 
 module Context : sig
@@ -50,7 +44,11 @@ module Context : sig
 
   val make : Capability.t list -> t
 
+  val capabilities : t -> Capability.t list * Capability.t list
+
   val update : t -> Capability.t list -> unit
+
+  val shared : Capability.t -> t -> bool
 end
 
 module Scheduler

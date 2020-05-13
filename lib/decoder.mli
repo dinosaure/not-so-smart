@@ -26,8 +26,8 @@ val pp_error : error Fmt.t
 type 'err info = { error : 'err; buffer : bytes; committed : int }
 
 type ('v, 'err) state =
-  | Done of 'v
-  | Read of {
+  | Done  of 'v
+  | Read  of {
       buffer : bytes;
       off : int;
       len : int;

@@ -1,10 +1,10 @@
 let ( <.> ) f g x = f (g x)
 
 type ('a, 'err) t =
-  | Read of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
-  | Write of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
+  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
+  | Write  of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
   | Return of 'a
-  | Error of 'err
+  | Error  of 'err
 
 module type CONTEXT = sig
   type t
@@ -19,7 +19,7 @@ module type CONTEXT = sig
 
   val decoder : t -> decoder
 
-  val capabilities : t -> Capability.t list
+  val shared : Capability.t -> t -> bool
 end
 
 module type S = sig
@@ -33,22 +33,16 @@ module type S = sig
 
   type decoder
 
-  val encode :
-    capabilities:Capability.t list ->
-    encoder ->
-    'a send ->
-    'a ->
-    (unit, error) t
+  val encode : encoder -> 'a send -> 'a -> (unit, error) t
 
-  val decode :
-    capabilities:Capability.t list -> decoder -> 'a recv -> ('a, error) t
+  val decode : decoder -> 'a recv -> ('a, error) t
 end
 
 module Context = struct
   type t = {
     encoder : Encoder.encoder;
     decoder : Decoder.decoder;
-    mutable capabilities : Capability.t list;
+    mutable capabilities : Capability.t list * Capability.t list;
   }
 
   type encoder = Encoder.encoder
@@ -58,7 +52,11 @@ module Context = struct
   let pp _ppf _t = ()
 
   let make capabilities =
-    { encoder = Encoder.encoder (); decoder = Decoder.decoder (); capabilities }
+    {
+      encoder = Encoder.encoder ();
+      decoder = Decoder.decoder ();
+      capabilities = (capabilities, []);
+    }
 
   let encoder { encoder; _ } = encoder
 
@@ -66,11 +64,14 @@ module Context = struct
 
   let capabilities { capabilities; _ } = capabilities
 
-  let update ({ capabilities = client_side; _ } as t) server_side =
-    let module Set = Set.Make (Capability) in
-    let server_side = Set.of_list server_side in
-    let client_side = Set.of_list client_side in
-    t.capabilities <- Set.elements (Set.inter server_side client_side)
+  let update ({ capabilities = client_side, _; _ } as t) server_side =
+    t.capabilities <- (client_side, server_side)
+
+  let shared capability t =
+    let client_side, server_side = t.capabilities in
+    let a = List.exists (Capability.equal capability) client_side in
+    let b = List.exists (Capability.equal capability) server_side in
+    a && b
 end
 
 module Scheduler
@@ -114,9 +115,7 @@ struct
           Write { k = go <.> k; buffer; off; len }
       | Read { k; buffer; off; len } -> Read { k = go <.> k; buffer; off; len }
       | Error err -> Error (`Protocol err) in
-    go
-      (Value.encode ~capabilities:(Context.capabilities ctx)
-         (Context.encoder ctx) w v)
+    go (Value.encode (Context.encoder ctx) w v)
 
   let send :
       type a.
@@ -136,9 +135,7 @@ struct
           Write { k = go <.> k; buffer; off; len }
       | Return v -> k ctx v
       | Error err -> Error (`Protocol err) in
-    go
-      (Value.decode ~capabilities:(Context.capabilities ctx)
-         (Context.decoder ctx) w)
+    go (Value.decode (Context.decoder ctx) w)
 
   let recv : type a. Context.t -> a Value.recv -> (a, [> `Protocol of error ]) t
       =
