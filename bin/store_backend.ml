@@ -1,4 +1,4 @@
-open Neg.Sigs
+open Sigs
 open Rresult
 
 let src = Logs.Src.create "store"
@@ -32,6 +32,71 @@ let kind_of_object path uid =
   | Ok _ -> R.ok None
   | Error err ->
       Log.err (fun m -> m "Got an error [kind_of_object]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let lightly_load { Carton.return; _ } path uid =
+  let uid = Uid.to_hex uid in
+  let fiber =
+    let open Bos in
+    kind_of_object path uid >>= function
+    | None -> failwithf "Object <%s> not found" uid
+    | Some kind ->
+        let kind =
+          match kind with
+          | `Commit -> `A
+          | `Tree -> `B
+          | `Blob -> `C
+          | `Tag -> `D in
+        OS.Dir.set_current path >>= fun () ->
+        OS.Cmd.run_out ~err:OS.Cmd.err_null
+          Cmd.(v "git" % "cat-file" % "-s" % uid)
+        |> OS.Cmd.out_string ~trim:true
+        >>= fun (length, info) -> R.ok ((kind, int_of_string length), info)
+  in
+  match fiber with
+  | Ok (v, (_, `Exited 0)) -> return v
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m -> m "Got an error [lightly_load]: %a" R.pp_msg err) ;
+      failwithf "%a" R.pp_msg err
+
+let heavily_load { Carton.return; _ } path uid =
+  let uid = Uid.to_hex uid in
+  let fiber =
+    let open Bos in
+    kind_of_object path uid >>= function
+    | None -> failwithf "Object <%s> not found" uid
+    | Some kind ->
+        let kind, str =
+          match kind with
+          | `Commit -> (`A, "commit")
+          | `Tree -> (`B, "tree")
+          | `Blob -> (`C, "blob")
+          | `Tag -> (`D, "tag") in
+        OS.Dir.set_current path >>= fun () ->
+        OS.Cmd.run_out ~err:OS.Cmd.err_null
+          Cmd.(v "git" % "cat-file" % str % uid)
+        |> OS.Cmd.out_string ~trim:false
+        >>= fun (payload, info) -> R.ok ((kind, payload), info) in
+  match fiber with
+  | Ok ((kind, payload), (_, `Exited 0)) ->
+      let payload =
+        Bigstringaf.of_string payload ~off:0 ~len:(String.length payload) in
+      Fmt.epr "%s (size: %d byte(s)) loaded!\n%!" (uid :> string) (Bigstringaf.length payload) ;
+      return (Carton.Dec.v ~kind payload)
+  | Ok (_, (run_info, _)) ->
+      Log.err
+        Bos.(
+          fun m ->
+            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
+      failwithf "Object <%s> not found" uid
+  | Error err ->
+      Log.err (fun m -> m "Got an error [heavily_load]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err
 
 let parents_of_commit path uid =
@@ -189,7 +254,7 @@ let parents :
     Uid.t ->
     (Uid.t, Uid.t * int ref * int64, git) store ->
     ((Uid.t * int ref * int64) list, s) io =
- fun { Neg.Sigs.return; _ } path uid store ->
+ fun { Sigs.return; _ } path uid store ->
   let store = Store.prj store in
   match parents_of_commit path (uid :> string) with
   | Ok uids -> (
@@ -202,7 +267,9 @@ let parents :
         | Ok (Some obj) ->
             Hashtbl.add store uid obj ;
             obj
-        | Ok None -> assert false
+        | Ok None ->
+            assert false
+            (* XXX(dinosaure): impossible, [git] can not give to us unknown object. *)
         | Error err -> Stdlib.raise (Failure (Fmt.strf "%a" R.pp_msg err)) in
       try
         let objs = List.map map uids in
@@ -219,7 +286,7 @@ let deref :
     reference ->
     (Uid.t, Uid.t * int ref * int64, git) store ->
     (Uid.t option, s) io =
- fun { Neg.Sigs.return; _ } path reference _ ->
+ fun { Sigs.return; _ } path reference _ ->
   let fiber =
     let open Bos in
     OS.Dir.set_current path >>= fun () ->
@@ -239,7 +306,7 @@ let locals :
     Fpath.t ->
     (Uid.t, Uid.t * int ref * int64, git) store ->
     (reference list, s) io =
- fun { Neg.Sigs.return; _ } path _ ->
+ fun { Sigs.return; _ } path _ ->
   let fiber =
     let open Bos in
     OS.Dir.set_current path >>= fun () ->

@@ -95,6 +95,12 @@ module Commands : sig
     ('uid, 'ref) t
 
   val commands : ('uid, 'ref) t -> ('uid, 'ref) command list
+
+  val map :
+    fuid:('uid0 -> 'uid1) ->
+    fref:('ref0 -> 'ref1) ->
+    ('uid0, 'ref0) t ->
+    ('uid1, 'ref1) t
 end
 
 module Shallow : sig
@@ -107,7 +113,10 @@ module Status : sig
     commands : ('ref, 'ref * string) result list;
   }
 
+  val pp : string t Fmt.t
   val to_result : 'string t -> (unit, string) result
+  val v : ?err:string -> (('uid, 'ref) Commands.command, ('uid, 'ref) Commands.command * string) result list ->
+    'ref t
 end
 
 module Decoder : sig
@@ -167,8 +176,6 @@ module Encoder : sig
     ?stateless:bool ->
     encoder ->
     string ->
-    int ->
-    int ->
     error state
 
   val unsafe_encode_packet : encoder -> packet:string -> unit

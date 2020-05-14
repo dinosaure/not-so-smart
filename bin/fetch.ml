@@ -81,7 +81,7 @@ module V1 = struct
         failwithf "%a" Conduit_lwt_unix.pp_error err
     | Ok flow -> (
         Log.info (fun m ->
-            m "Connected to <%a/%s>." Domain_name.pp domain_name path) ;
+            m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
         fetch ~capabilities ?want ~host:domain_name path flow store access
           fetch_cfg
         >>= fun () ->
@@ -189,7 +189,7 @@ let references =
     "The remote heads to update from. This is relative to FETCH_DIR (e.g. \
      \"HEAD\", \"refs/heads/master\"). When unspecified, update from all heads \
      the remote side has." in
-  Arg.(value & pos_right 1 reference [] & info [] ~docv:"<refs>..." ~doc)
+  Arg.(value & pos_right 0 reference [] & info [] ~docv:"<refs>..." ~doc)
 
 let local =
   let env = Arg.env_var "FETCH_DIR" in
@@ -258,5 +258,3 @@ let fetch =
       $ references
       $ local),
     Term.info "fetch" ~doc ~exits ~man )
-
-let () = Term.(exit @@ eval fetch)

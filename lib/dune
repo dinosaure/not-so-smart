@@ -1,7 +1,7 @@
 (library
  (name smart)
  (modules smart filter capability state protocol encoder decoder)
- (libraries domain-name astring fmt))
+ (libraries rresult bigstringaf domain-name astring fmt))
 
 (library
  (name sigs)

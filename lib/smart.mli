@@ -76,15 +76,6 @@ module Negotiation : sig
   val map : f:('a -> 'b) -> 'a t -> 'b t
 end
 
-module Status : sig
-  type 'ref t = private {
-    result : (unit, string) result;
-    commands : ('ref, 'ref * string) result list;
-  }
-
-  val to_result : 'ref t -> (unit, string) result
-end
-
 module Commands : sig
   type ('uid, 'ref) command = private
     | Create of 'uid * 'ref
@@ -106,6 +97,24 @@ module Commands : sig
     ('uid, 'ref) t
 
   val commands : ('uid, 'ref) t -> ('uid, 'ref) command list
+
+  val map :
+    fuid:('uid0 -> 'uid1) ->
+    fref:('ref0 -> 'ref1) ->
+    ('uid0, 'ref0) t ->
+    ('uid1, 'ref1) t
+end
+
+module Status : sig
+  type 'ref t = private {
+    result : (unit, string) result;
+    commands : ('ref, 'ref * string) result list;
+  }
+
+  val pp : string t Fmt.t
+  val to_result : 'ref t -> (unit, string) result
+  val v : ?err:string -> (('uid, 'ref) Commands.command, ('uid, 'ref) Commands.command * string) result list ->
+    'ref t
 end
 
 module Shallow : sig
@@ -161,7 +170,7 @@ val flush : unit send
 
 val commands : (string, string) Commands.t send
 
-val send_pack : ?stateless:bool -> bool -> (string * int * int) send
+val send_pack : ?stateless:bool -> bool -> string send
 
 type 'a recv
 

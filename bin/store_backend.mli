@@ -42,6 +42,12 @@ val get_commit_for_negotiation :
   (Uid.t, Uid.t * int ref * int64, git) store ->
   ((Uid.t * int ref * int64) option, 's) io
 
+val heavily_load :
+  's Carton.scheduler -> Fpath.t -> Uid.t -> (Carton.Dec.v, 's) Carton.io
+
+val lightly_load :
+  's Carton.scheduler -> Fpath.t -> Uid.t -> (Carton.kind * int, 's) Carton.io
+
 val access :
   's scheduler ->
   Fpath.t ->

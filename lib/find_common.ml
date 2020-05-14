@@ -48,8 +48,10 @@ let run :
           then go (k len)
           else
             send flow tmp >>= function
-            | Ok shift -> loop (Cstruct.shift tmp shift)
-            | Error err -> failwithf "%a" pp_error err in
+            | Ok shift ->
+              loop (Cstruct.shift tmp shift)
+            | Error err ->
+              failwithf "%a" pp_error err in
         loop (Cstruct.of_string buffer ~off ~len)
     | Smart.Return v -> return v
     | Smart.Error err -> failwithf "%a" pp_error err in
@@ -112,7 +114,7 @@ let find_common ({ bind; return } as scheduler) io flow
   fold_left_s ~f:fold [] refs >>| List.rev >>= function
   | [] ->
       run scheduler raise io flow Smart.(send ctx flush ()) >>= fun () ->
-      assert false
+      return 0
   | uid :: others ->
       run scheduler raise io flow
         Smart.(

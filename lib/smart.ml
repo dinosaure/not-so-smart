@@ -21,7 +21,7 @@ module Witness = struct
         side_band : bool;
         stateless : bool;
       }
-        -> (string * int * int) send
+        -> string send
 
   type 'a recv =
     | Advertised_refs : (string, string) Advertised_refs.t recv
@@ -56,10 +56,7 @@ module Value = struct
       | Done -> Protocol.Encoder.encode_done encoder
       | Commands -> Protocol.Encoder.encode_commands encoder v
       | Send_pack { side_band; stateless } ->
-          (* TODO(dinosaure): avoid allocation. *)
-          let buffer, off, len = v in
-          Protocol.Encoder.encode_pack ~side_band ~stateless encoder buffer off
-            len
+          Protocol.Encoder.encode_pack ~side_band ~stateless encoder v
       | Flush -> Protocol.Encoder.encode_flush encoder in
     let rec go = function
       | Encoder.Done -> State.Return ()

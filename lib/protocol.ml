@@ -142,6 +142,11 @@ module Commands = struct
     | Delete of 'uid * 'ref
     | Update of 'uid * 'uid * 'ref
 
+  let map_command ~fuid ~fref = function
+    | Create (uid, ref) -> Create (fuid uid, fref ref)
+    | Delete (uid, ref) -> Delete (fuid uid, fref ref)
+    | Update (a, b, ref) -> Update (fuid a, fuid b, fref ref)
+
   type ('uid, 'ref) t = {
     capabilities : Capability.t list;
     commands : ('uid, 'ref) command * ('uid, 'ref) command list;
@@ -157,6 +162,11 @@ module Commands = struct
     { capabilities; commands = (command, others) }
 
   let commands { commands = command, others; _ } = command :: others
+
+  let map ~fuid ~fref { commands = command, others; capabilities } =
+    let command = map_command ~fuid ~fref command in
+    let others = List.map (map_command ~fuid ~fref) others in
+    { commands = (command, others); capabilities }
 end
 
 module Shallow = struct
@@ -169,7 +179,28 @@ module Status = struct
     commands : ('ref, 'ref * string) result list;
   }
 
+  let pp ppf { result; commands; } =
+    let ok_with_ref ppf ref = Fmt.pf ppf "%s:ok" ref in
+    let error_with_ref ppf (ref, err) = Fmt.pf ppf "%s:%s" ref err in
+    Fmt.pf ppf "{ @[<hov>result= %a;@ commands= @[<hov>%a@];@] }"
+      Fmt.(Dump.result ~ok:(const string "done") ~error:string) result
+      Fmt.(Dump.list (Dump.result ~ok:ok_with_ref ~error:error_with_ref)) commands
+
   let to_result { result; _ } = result
+
+  let v ?(err= "An error occurred") cmds =
+    let commands =
+      let map = function
+        | Ok (Commands.Create (_, ref))
+        | Ok (Commands.Delete (_, ref))
+        | Ok (Commands.Update (_, _, ref)) -> Ok ref
+        | Error (( Commands.Create (_, ref)
+                 | Commands.Delete (_, ref)
+                 | Commands.Update (_, _, ref) ), err) -> Error (ref, err) in
+      List.map map cmds in
+    if List.exists (Rresult.R.is_error) commands
+    then { result= Error err; commands; }
+    else { result= Ok (); commands; }
 end
 
 module Decoder = struct
@@ -667,7 +698,6 @@ module Encoder = struct
   let write_command encoder = function
     | Commands.Create (uid, r) ->
         let zero_id = String.make (String.length uid) '0' in
-        write encoder "create " ;
         write encoder zero_id ;
         write_space encoder ;
         write encoder uid ;
@@ -675,14 +705,12 @@ module Encoder = struct
         write encoder r
     | Commands.Delete (uid, r) ->
         let zero_id = String.make (String.length uid) '0' in
-        write encoder "delete " ;
         write encoder uid ;
         write_space encoder ;
         write encoder zero_id ;
         write_space encoder ;
         write encoder r
     | Commands.Update (a, b, r) ->
-        write encoder "update " ;
         write encoder a ;
         write_space encoder ;
         write encoder b ;
@@ -713,14 +741,14 @@ module Encoder = struct
     delayed_write_pkt first others encoder
 
   (* TODO(dinosaure): handle HTTP/stateless and side-band. *)
-  let encode_pack ?side_band:(_ = false) ?stateless:(_ = false) encoder buffer
-      off len =
+  let encode_pack ?side_band:(_ = false) ?stateless:(_ = false) encoder payload =
     let rec go buffer off max encoder =
       if max = 0
       then flush kdone encoder
       else
         let len = min max (Bytes.length encoder.payload - encoder.pos) in
-        Bytes.blit_string buffer off encoder.payload encoder.pos len ;
+        Bytes.blit_string payload off encoder.payload encoder.pos len ;
+        encoder.pos <- encoder.pos + len ;
         flush (go buffer (off + len) (max - len)) encoder in
-    go buffer off len encoder
+    go payload 0 (String.length payload) encoder
 end
