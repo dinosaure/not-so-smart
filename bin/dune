@@ -1,4 +1,4 @@
 (executable
- (name nss)
- (libraries conduit-lwt-unix conduit-lwt-unix.tcp bos smart neg pck carton
+ (name not_so_smart)
+ (libraries conduit-lwt-unix conduit-lwt-unix.tcp bos nss pck carton-lwt
    digestif.c uri fmt.tty fmt.cli logs.fmt logs.cli cmdliner))

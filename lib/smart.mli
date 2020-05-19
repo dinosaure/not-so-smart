@@ -1,3 +1,9 @@
+(** Implementation of smart protocol.
+
+    This module does not have any Git logics. It provides a light implementation
+    of the Smart protocol to be able to [fetch]/[pull] or [push] with a Git {i
+    server}. *)
+
 module Capability = Capability
 
 module Advertised_refs : sig
@@ -24,6 +30,12 @@ module Advertised_refs : sig
     'ref list ->
     ('uid, 'ref) t ->
     'uid list
+
+  val map :
+    fuid:('uid0 -> 'uid1) ->
+    fref:('ref0 -> 'ref1) ->
+    ('uid0, 'ref0) t ->
+    ('uid1, 'ref1) t
 end
 
 module Proto_request : sig
@@ -111,9 +123,18 @@ module Status : sig
     commands : ('ref, 'ref * string) result list;
   }
 
+  val map : f:('a -> 'b) -> 'a t -> 'b t
+
   val pp : string t Fmt.t
+
   val to_result : 'ref t -> (unit, string) result
-  val v : ?err:string -> (('uid, 'ref) Commands.command, ('uid, 'ref) Commands.command * string) result list ->
+
+  val v :
+    ?err:string ->
+    ( ('uid, 'ref) Commands.command,
+      ('uid, 'ref) Commands.command * string )
+    result
+    list ->
     'ref t
 end
 
@@ -182,7 +203,7 @@ val recv_pack :
   ?side_band:bool ->
   ?push_stdout:(string -> unit) ->
   ?push_stderr:(string -> unit) ->
-  push_pack:(string -> unit) ->
+  push_pack:(string * int * int -> unit) ->
   unit recv
 
 val ack : string Negotiation.t recv

@@ -1,15 +1,9 @@
-open Neg.Sigs
+open Sigs
 
-type lwt
+module Scheduler : SCHED with type +'a s = 'a Lwt.t
 
-type error = [ Conduit_lwt.error | `Protocol of Smart.error ]
+val lwt : Scheduler.t scheduler
 
-val lwt_prj : ('a, lwt) io -> 'a Lwt.t
+val lwt_io : (Conduit_lwt.flow, Conduit_lwt.error, Scheduler.t) flow
 
-val lwt_inj : 'a Lwt.t -> ('a, lwt) io
-
-val lwt : lwt scheduler
-
-val lwt_io : (Conduit_lwt.flow, error, lwt) flow
-
-val lwt_fail : exn -> ('a, lwt) io
+val lwt_fail : exn -> ('a, Scheduler.t) io

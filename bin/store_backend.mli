@@ -1,8 +1,6 @@
-open Neg.Sigs
+open Sigs
 
 type git
-
-type reference = private string
 
 val store_prj : ('uid, 'v, git) store -> ('uid, 'v) Hashtbl.t
 
@@ -15,18 +13,13 @@ val parents :
   (Uid.t, Uid.t * int ref * int64, git) store ->
   ((Uid.t * int ref * int64) list, 's) io
 
-val deref :
-  's scheduler ->
-  Fpath.t ->
-  reference ->
-  (Uid.t, Uid.t * int ref * int64, git) store ->
-  (Uid.t option, 's) io
+val deref : 's scheduler -> Fpath.t -> 'store -> Ref.t -> (Uid.t option, 's) io
 
 val locals :
   's scheduler ->
   Fpath.t ->
   (Uid.t, Uid.t * int ref * int64, git) store ->
-  (reference list, 's) io
+  (Ref.t list, 's) io
 
 val get_object_for_packer :
   's scheduler ->
@@ -42,13 +35,12 @@ val get_commit_for_negotiation :
   (Uid.t, Uid.t * int ref * int64, git) store ->
   ((Uid.t * int ref * int64) option, 's) io
 
-val heavily_load :
-  's Carton.scheduler -> Fpath.t -> Uid.t -> (Carton.Dec.v, 's) Carton.io
+val heavily_load : 's scheduler -> Fpath.t -> Uid.t -> (Carton.Dec.v, 's) io
 
 val lightly_load :
-  's Carton.scheduler -> Fpath.t -> Uid.t -> (Carton.kind * int, 's) Carton.io
+  's scheduler -> Fpath.t -> Uid.t -> (Carton.kind * int, 's) io
 
 val access :
   's scheduler ->
   Fpath.t ->
-  (Uid.t, reference, Uid.t * int ref * int64, git, 's) access
+  (Uid.t, Ref.t, Uid.t * int ref * int64, git, 's) access

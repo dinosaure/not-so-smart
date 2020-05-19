@@ -8,13 +8,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-let identity x = x
-
-let ( <.> ) f g = fun x -> f (g x)
-
-let run = Neg.run
-
-type configuration = { stateless : bool }
+let ( <.> ) f g x = f (g x)
 
 module Crt = struct
   open Lwt.Infix
@@ -29,29 +23,13 @@ module Crt = struct
     let flush () = Lwt.return_unit
   end
 
-  module Lwt_scheduler = Carton.Make (struct
-    type +'a t = 'a Lwt.t
-  end)
-
-  let lwt_inj = Lwt_scheduler.inj
-
-  let lwt_prj = Lwt_scheduler.prj
-
-  let lwt =
-    let open Lwt_scheduler in
-    let open Lwt.Infix in
-    {
-      Carton.bind = (fun x f -> inj (prj x >>= fun x -> prj (f x)));
-      Carton.return = (fun x -> inj (Lwt.return x));
-    }
+  module Delta = Carton_lwt.Enc.Delta (Uid) (Verbose)
 
   let deltify ~light_load ~heavy_load ?(threads = 4) (uids : Uid.t list) =
     let fold (uid : Uid.t) =
-      light_load uid |> lwt_prj >|= fun (kind, length) ->
-      Carton.Enc.make_entry ~kind ~length uid in
+      light_load uid >|= fun (kind, length) ->
+      Carton_lwt.Enc.make_entry ~kind ~length uid in
     Lwt_list.map_p fold uids >|= Array.of_list >>= fun entries ->
-    let module Delta = Carton.Enc.Delta (Lwt_scheduler) (Lwt_io) (Uid) (Verbose)
-    in
     Delta.delta
       ~threads:(List.init threads (fun _thread -> heavy_load))
       ~weight:10 ~uid_ln:Uid.length entries
@@ -59,13 +37,12 @@ module Crt = struct
 
   let header = Bigstringaf.create 12
 
-  let pack ~(heavy_load : (Uid.t, Lwt_scheduler.t) Carton.Enc.load) stream
-      targets =
+  let pack ~(heavy_load : Uid.t Carton_lwt.Enc.load) stream targets =
     let offsets = Hashtbl.create (Array.length targets) in
     let find uid =
       match Hashtbl.find offsets uid with
-      | v -> lwt_inj (Lwt.return_some v)
-      | exception Not_found -> lwt_inj Lwt.return_none in
+      | v -> Lwt.return_some v
+      | exception Not_found -> Lwt.return_none in
     let uid =
       { Carton.Enc.uid_ln = Uid.length; Carton.Enc.uid_rw = Uid.to_raw_string }
     in
@@ -84,12 +61,12 @@ module Crt = struct
     ctx := Digestif.SHA1.feed_string !ctx header ;
     cursor := !cursor + 12 ;
     let encode_targets targets =
-      Log.debug (fun m -> m "Start to encode %d object(s)." (Array.length targets)) ;
+      Log.debug (fun m ->
+          m "Start to encode %d object(s)." (Array.length targets)) ;
       let encode_target idx =
         Hashtbl.add offsets (Carton.Enc.target_uid targets.(idx)) !cursor ;
-        Carton.Enc.encode_target lwt ~b ~find ~load:heavy_load ~uid
+        Carton_lwt.Enc.encode_target ~b ~find ~load:heavy_load ~uid
           targets.(idx) ~cursor:!cursor
-        |> lwt_prj
         >>= fun (len, encoder) ->
         let rec go encoder =
           match Carton.Enc.N.encode ~o:b.o encoder with
@@ -120,152 +97,40 @@ module Crt = struct
     Lwt.return_unit
 end
 
-module V1 = struct
-  let deref path reference =
-    let failwithf fmt = Fmt.kstrf (fun err -> raise (Failure err)) fmt in
-    let fiber =
-      let open Bos in
-      OS.Dir.set_current path >>= fun () ->
-      OS.Cmd.run_out ~err:OS.Cmd.err_null
-        Cmd.(v "git" % "show-ref" % "--hash" % reference)
-      |> OS.Cmd.out_string ~trim:true in
-    match fiber with
-    | Ok (uid, (_, `Exited 0)) -> Uid.of_hex uid
-    | Ok _ -> failwithf "Local reference <%s> not found." reference
-    | Error err ->
-        Log.err (fun m -> m "Got an error [deref]: %a" R.pp_msg err) ;
-        failwithf "%a" R.pp_msg err
+let pack ~light_load ~heavy_load uids =
+  let open Lwt.Infix in
+  Crt.deltify ~light_load ~heavy_load uids >>= fun (_, targets) ->
+  let stream, pusher = Lwt_stream.create () in
+  let stream () = Lwt_stream.get stream in
+  Lwt.return (stream, Crt.pack ~heavy_load pusher targets)
 
-  let to_commands ~capabilities path cmds have =
-    let fold acc = function
-      | `Create reference ->
-          Log.debug (fun m -> m "Create an new reference.") ;
-          let uid = deref path reference in
-          Smart.Commands.create uid reference :: acc
-      | `Delete reference ->
-          Log.debug (fun m -> m "Delete an old reference.") ;
-          let uid, _, _ =
-            List.find
-              (fun (_, reference', peeled) ->
-                String.equal reference reference' && peeled = false)
-              have in
-          let uid = Uid.of_hex uid in
-          Smart.Commands.delete uid reference :: acc
-      | `Update (local, remote) ->
-          Log.debug (fun m -> m "Update %s:%s" local remote) ;
-          let uid_new = deref path local in
-          let uid_old, _, _ =
-            List.find
-              (fun (_, reference', peeled) ->
-                String.equal remote reference' && peeled = false)
-              have in
-          let uid_old = Uid.of_hex uid_old in
-          Smart.Commands.update uid_old uid_new remote :: acc in
-    match List.fold_left fold [] cmds with
-    | [] -> None
-    | head :: tail -> Some (Smart.Commands.v ~capabilities ~others:tail head)
+module Tuyau = struct
+  type t = Conduit_lwt.flow
 
-  let packer have cmds =
-    let module Set = Set.Make (Uid) in
-    let exclude =
-      let fold acc (uid, _, _) = Set.add (Uid.of_hex uid) acc in
-      List.fold_left fold Set.empty have in
-    let exclude =
-      let fold acc = function
-        | Smart.Commands.Create _ -> acc
-        | Smart.Commands.Delete (uid, _) -> Set.add (Uid.of_hex uid) acc
-        | Smart.Commands.Update (uid, _, _) -> Set.add (Uid.of_hex uid) acc
-      in
-      List.fold_left fold exclude cmds in
-    let sources =
-      let fold acc = function
-        | Smart.Commands.Update (_, uid, _) -> Set.add (Uid.of_hex uid) acc
-        | Smart.Commands.Create (uid, _) -> Set.add (Uid.of_hex uid) acc
-        | Smart.Commands.Delete _ -> acc in
-      List.fold_left fold Set.empty cmds in
-    (Set.elements exclude, Set.elements sources)
+  type +'a fiber = 'a Lwt.t
 
-  let pack ~light_load ~heavy_load uids =
-    let open Lwt.Infix in
-    Crt.deltify ~light_load ~heavy_load uids >>= fun (_, targets) ->
-    let stream, pusher = Lwt_stream.create () in
-    Lwt.return (stream, Crt.pack ~heavy_load pusher targets)
-
-  let push ~light_load ~heavy_load ~to_commands ~capabilities:caps cmds ~host
-      path flow store access push_cfg =
-    let fiber ctx =
-      let open Smart in
-      let* () =
-        send ctx proto_request
-          (Proto_request.receive_pack ~host ~version:1 path)
-      in
-      let* v = recv ctx advertised_refs in
-      update ctx (Smart.Advertised_refs.capabilities v) ;
-      let have = Smart.Advertised_refs.refs v in
-      match
-        Option.map
-          (Smart.Commands.map ~fuid:Uid.to_hex ~fref:identity)
-          (to_commands ~capabilities:caps cmds have)
-      with
-      | None ->
-        Log.debug (fun m -> m "Nothing to do with our peer.") ;
-        send ctx flush () >>= fun () -> return None
-      | Some cmds ->
-          send ctx commands cmds >>= fun () ->
-          let cmds = Smart.Commands.commands cmds in
-          return (Some (have, cmds)) in
-    let open Lwt.Infix in
-    let ctx = Smart.make caps in
-    run lwt lwt_fail lwt_io flow (fiber ctx) |> lwt_prj >>= function
-    | None -> Lwt.return_unit
-    | Some (have, cmds) -> (
-        let exclude, sources = packer have cmds in
-        Pck.packer lwt ~compare:Uid.compare access store ~exclude ~sources
-        |> lwt_prj
-        >>= fun uids ->
-        Log.debug (fun m -> m "Prepare a pack of %d object(s)." (List.length uids)) ;
-        pack ~light_load ~heavy_load uids >>= fun (stream, th) ->
-        let pack = Smart.send_pack ~stateless:push_cfg.stateless false (* side-band *) in
-        let rec go () =
-          Lwt_stream.get stream >>= function
-          | None ->
-            let report_status = Smart.shared `Report_status ctx in
-            Log.debug (fun m -> m "report-status capability: %b." report_status) ;
-            if report_status
-            then run lwt lwt_fail lwt_io flow Smart.(recv ctx status) |> lwt_prj
-            else
-              let cmds = List.map R.ok cmds in
-              Lwt.return (Smart.Status.v cmds)
-          | Some payload ->
-              run lwt lwt_fail lwt_io flow Smart.(send ctx pack payload) |> lwt_prj
-              >>= fun () -> go () in
-        Lwt.async (fun () -> th) ;
-        go () >>= fun status ->
-        match Smart.Status.to_result status with
-        | Ok () ->
-          Log.debug (fun m -> m "Push is done!") ;
-          Log.info (fun m -> m "%a" Smart.Status.pp status) ;
-          Lwt.return ()
-        | Error _ -> assert false)
-
-  let connect ~light_load ~heavy_load ~to_commands ~capabilities path ~resolvers
-      cmds domain_name store access push_cfg =
-    let open Lwt.Infix in
-    Log.debug (fun m -> m "Try to connect to <%a>." Domain_name.pp domain_name) ;
-    Conduit_lwt_unix.flow resolvers domain_name >>= function
-    | Error err ->
-        Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
-        failwithf "%a" Conduit_lwt_unix.pp_error err
-    | Ok flow -> (
-        Log.info (fun m ->
-            m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
-        push ~light_load ~heavy_load ~to_commands ~capabilities cmds
-          ~host:domain_name path flow store access push_cfg
-        >>= fun () ->
-        Conduit_lwt.close flow >>= function
-        | Ok () -> Lwt.return_unit
-        | Error err -> failwithf "%a" Conduit_lwt.pp_error err)
+  include Conduit_lwt
 end
+
+module Push = Nss.Push.Make (Scheduler) (Lwt) (Tuyau) (Uid) (Ref)
+
+let connect ~capabilities path ~resolvers cmds domain_name store access push_cfg
+    pack =
+  let open Lwt.Infix in
+  Log.debug (fun m -> m "Try to connect to <%a>." Domain_name.pp domain_name) ;
+  Conduit_lwt_unix.flow resolvers domain_name >>= function
+  | Error err ->
+      Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
+      failwithf "%a" Conduit_lwt_unix.pp_error err
+  | Ok flow -> (
+      Log.info (fun m ->
+          m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
+      Push.push ~capabilities cmds ~host:domain_name path flow store access
+        push_cfg pack
+      >>= fun () ->
+      Conduit_lwt.close flow >>= function
+      | Ok () -> Lwt.return_unit
+      | Error err -> failwithf "%a" Conduit_lwt.pp_error err)
 
 let resolvers =
   Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
@@ -275,25 +140,25 @@ let resolvers =
 let push uri ?(version = `V1) ?(capabilities = []) cmds path =
   let access =
     {
-      Sigs.exists = get_object_for_packer lwt path;
+      Sigs.get = get_object_for_packer lwt path;
       Sigs.parents = (fun _uid _store -> assert false);
-      Sigs.deref = (fun _ref _store -> assert false);
+      Sigs.deref = deref lwt path;
       Sigs.locals = (fun _store -> assert false);
     } in
-  let light_load = lightly_load Crt.lwt path in
-  let heavy_load = heavily_load Crt.lwt path in
-  let to_commands = V1.to_commands path in
+  let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
+  let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
+  let pack = pack ~light_load ~heavy_load in
   let store = store_inj (Hashtbl.create 0x100) in
   match (version, Uri.scheme uri, Uri.host uri, Uri.path uri) with
   | `V1, Some "git", Some domain_name, path ->
-      let push_cfg = { stateless = true } in
+      let push_cfg = Nss.Push.configuration () in
       let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
       let fiber =
         let open Lwt.Infix in
         Lwt.catch
           (fun () ->
-            V1.connect ~light_load ~heavy_load ~to_commands ~capabilities path
-              ~resolvers cmds domain_name store access push_cfg
+            connect ~capabilities path ~resolvers cmds domain_name store access
+              push_cfg pack
             >>= Lwt.return_ok)
           (function
             | Failure err -> Lwt.return_error (R.msgf "%s" err)
@@ -322,15 +187,18 @@ let uri =
   Arg.conv (parser, pp)
 
 let command =
-  let parser x = match Astring.String.cut ~sep:":" x with
-    | Some ("", remote) -> R.ok (`Delete remote)
-    | Some (local, "") -> R.ok (`Create local)
-    | Some (local, remote) -> R.ok (`Update (local, remote))
-    | None -> R.ok (`Update (x, x)) in
+  let parser x =
+    match Astring.String.cut ~sep:":" x with
+    | Some ("", remote) -> R.ok (`Delete (Ref.v remote))
+    | Some (local, "") -> R.ok (`Create (Ref.v local))
+    | Some (local, remote) -> R.ok (`Update (Ref.v local, Ref.v remote))
+    | None -> R.ok (`Update (Ref.v x, Ref.v x)) in
   let pp ppf = function
-    | `Delete reference -> Fmt.pf ppf ":%s" reference
-    | `Create reference -> Fmt.pf ppf "%s:" reference
-    | `Update (a, b) -> if a = b then Fmt.string ppf a else Fmt.pf ppf "%s:%s" a b in
+    | `Delete reference -> Fmt.pf ppf ":%a" Ref.pp reference
+    | `Create reference -> Fmt.pf ppf "%a:" Ref.pp reference
+    | `Update (a, b) ->
+        if a = b then Ref.pp ppf a else Fmt.pf ppf "%a:%a" Ref.pp a Ref.pp b
+  in
   Arg.conv (parser, pp) ~docv:"<ref>"
 
 let directory =
@@ -375,11 +243,5 @@ let push =
         "Updates remote refs using local refs, while sending objects necessary \
          to complete the given refs.";
     ] in
-  ( Term.(
-      const push
-      $ verbosity
-      $ renderer
-      $ repository
-      $ commands
-      $ local),
+  ( Term.(const push $ verbosity $ renderer $ repository $ commands $ local),
     Term.info "push" ~doc ~exits ~man )

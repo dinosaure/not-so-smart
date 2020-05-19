@@ -17,9 +17,9 @@ type ('flow, 'error, 's) flow = {
 }
 
 type ('uid, 'ref, 'v, 'g, 's) access = {
-  exists : 'uid -> ('uid, 'v, 'g) store -> ('v option, 's) io;
+  get : 'uid -> ('uid, 'v, 'g) store -> ('v option, 's) io;
   parents : 'uid -> ('uid, 'v, 'g) store -> ('v list, 's) io;
-  deref : 'ref -> ('uid, 'v, 'g) store -> ('uid option, 's) io;
+  deref : ('uid, 'v, 'g) store -> 'ref -> ('uid option, 's) io;
   locals : ('uid, 'v, 'g) store -> ('ref list, 's) io;
 }
 

@@ -5,13 +5,11 @@ let src = Logs.Src.create "store"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-module Store = Neg.Sigs.Make_store (struct
+module Store = Sigs.Make_store (struct
   type ('k, 'v) t = ('k, 'v) Hashtbl.t
 end)
 
 type git = Store.t
-
-type reference = string
 
 let store_prj = Store.prj
 
@@ -34,7 +32,7 @@ let kind_of_object path uid =
       Log.err (fun m -> m "Got an error [kind_of_object]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err
 
-let lightly_load { Carton.return; _ } path uid =
+let lightly_load { Sigs.return; _ } path uid =
   let uid = Uid.to_hex uid in
   let fiber =
     let open Bos in
@@ -65,7 +63,7 @@ let lightly_load { Carton.return; _ } path uid =
       Log.err (fun m -> m "Got an error [lightly_load]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err
 
-let heavily_load { Carton.return; _ } path uid =
+let heavily_load { Sigs.return; _ } path uid =
   let uid = Uid.to_hex uid in
   let fiber =
     let open Bos in
@@ -87,7 +85,6 @@ let heavily_load { Carton.return; _ } path uid =
   | Ok ((kind, payload), (_, `Exited 0)) ->
       let payload =
         Bigstringaf.of_string payload ~off:0 ~len:(String.length payload) in
-      Fmt.epr "%s (size: %d byte(s)) loaded!\n%!" (uid :> string) (Bigstringaf.length payload) ;
       return (Carton.Dec.v ~kind payload)
   | Ok (_, (run_info, _)) ->
       Log.err
@@ -231,7 +228,8 @@ let get_object_for_packer { return; _ } path uid store =
       return (Some v)
   | Ok None -> return None
   | Error err ->
-      Log.warn (fun m -> m "Got an error [exists]: %a" R.pp_msg err) ;
+      Log.warn (fun m ->
+          m "Got an error [get_object_for_packer]: %a" R.pp_msg err) ;
       return None
 
 let get_commit_for_negotiation path (uid : Uid.t) =
@@ -280,18 +278,13 @@ let parents :
       failwithf "%a" R.pp_msg err
 
 let deref :
-    type s.
-    s scheduler ->
-    Fpath.t ->
-    reference ->
-    (Uid.t, Uid.t * int ref * int64, git) store ->
-    (Uid.t option, s) io =
- fun { Sigs.return; _ } path reference _ ->
+    type s. s scheduler -> Fpath.t -> 'store -> Ref.t -> (Uid.t option, s) io =
+ fun { Sigs.return; _ } path _ reference ->
   let fiber =
     let open Bos in
     OS.Dir.set_current path >>= fun () ->
     OS.Cmd.run_out ~err:OS.Cmd.err_null
-      Cmd.(v "git" % "show-ref" % "--hash" % reference)
+      Cmd.(v "git" % "show-ref" % "--hash" % (reference :> string))
     |> OS.Cmd.out_string ~trim:true in
   match fiber with
   | Ok (uid, (_, `Exited 0)) -> return (Some (Uid.of_hex uid))
@@ -305,7 +298,7 @@ let locals :
     s scheduler ->
     Fpath.t ->
     (Uid.t, Uid.t * int ref * int64, git) store ->
-    (reference list, s) io =
+    (Ref.t list, s) io =
  fun { Sigs.return; _ } path _ ->
   let fiber =
     let open Bos in
@@ -316,8 +309,8 @@ let locals :
   | Ok (refs, (_, `Exited 0)) ->
       let map line =
         match Astring.String.cut ~sep:" " line with
-        | Some (_, reference) -> reference
-        | None -> line in
+        | Some (_, reference) -> Ref.v reference
+        | None -> Ref.v line in
       return (List.map map refs)
   | Ok (_, (run_info, _)) ->
       Log.err
@@ -340,17 +333,18 @@ let get_commit_for_negotiation { Sigs.return; _ } path uid store =
       return (Some obj)
   | Ok None -> return None
   | Error err ->
-      Log.warn (fun m -> m "Got an error [exists]: %a" R.pp_msg err) ;
+      Log.warn (fun m ->
+          m "Got an error [get_commit_for_negotiation]: %a" R.pp_msg err) ;
       return None
 
 let access :
     type s.
     s scheduler ->
     Fpath.t ->
-    (Uid.t, reference, Uid.t * int ref * int64, git, s) access =
+    (Uid.t, Ref.t, Uid.t * int ref * int64, git, s) access =
  fun scheduler path ->
   {
-    exists = get_commit_for_negotiation scheduler path;
+    get = get_commit_for_negotiation scheduler path;
     parents = parents scheduler path;
     deref = deref scheduler path;
     locals = locals scheduler path;

@@ -4,131 +4,159 @@ open Store_backend
 
 let ( <.> ) f g x = f (g x)
 
-let identity x = x
-
-let src = Logs.Src.create "fetch"
+let src = Logs.Src.create "not-so-smart.fetch"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-let references want have =
-  match want with
-  | `None -> []
-  | `All ->
-      List.fold_left
-        (fun acc -> function uid, _, false -> uid :: acc | _ -> acc)
-        [] have
-  | `Some refs ->
-      let fold acc (uid, refname, peeled) =
-        if List.exists (( = ) refname) refs && not peeled
-        then uid :: acc
-        else acc in
-      List.fold_left fold [] have
+module Crt = struct
+  module Thin = Carton_lwt.Thin.Make (Uid)
 
-module V1 = struct
-  let fetch ~capabilities ?want:(refs = `None) ~host path flow store access
-      fetch_cfg =
-    let push_stdout, _no_progress =
-      if List.exists (( = ) `No_progress) capabilities
-      then (ignore, true)
+  type fd = { fd : Lwt_unix.file_descr; max : int64 }
+
+  let create filename =
+    let open Lwt.Infix in
+    let filename = Fpath.to_string filename in
+    Lwt_unix.openfile filename Unix.[ O_CREAT; O_RDWR ] 0o644 >>= fun fd ->
+    let st = Unix.LargeFile.stat filename in
+    Lwt.return_ok { fd; max = st.st_size }
+
+  let map { fd; _ } ~pos len =
+    let res =
+      Mmap.V1.map_file
+        (Lwt_unix.unix_file_descr fd)
+        ~pos Bigarray.char Bigarray.c_layout false [| len |] in
+    let res = Bigarray.array1_of_genarray res in
+    Lwt.return res
+
+  let append { fd; _ } payload =
+    let open Lwt.Infix in
+    let rec go off len =
+      if len <= 0
+      then Lwt.return_unit
       else
-        let mutex = Lwt_mutex.create () in
-        let print v =
-          Lwt.async @@ fun () ->
-          Lwt_mutex.with_lock mutex @@ fun () ->
-          Fmt.pr "%s%!" v ;
-          if not (String.contains v '\r') then Fmt.pr "\n%!" ;
-          Lwt.return_unit in
-        (print, false) in
-    let prelude ctx =
-      let open Smart in
-      let* () =
-        send ctx proto_request (Proto_request.upload_pack ~host ~version:1 path)
-      in
-      let* v = recv ctx advertised_refs in
-      Log.debug (fun m -> m "Got %a" Smart.Advertised_refs.pp v) ;
-      let uids = references refs (Smart.Advertised_refs.refs v) in
-      update ctx (Smart.Advertised_refs.capabilities v) ;
-      return uids in
-    let pack ctx =
-      let open Smart in
-      let side_band =
-        Smart.shared `Side_band ctx || Smart.shared `Side_band_64k ctx in
-      recv ctx
-        (recv_pack ~side_band ~push_stdout ~push_stderr:(Fmt.epr "%s\n%!")
-           ~push_pack:ignore) in
-    let ctx = Smart.make capabilities in
-    let negotiator = Neg.negotiator ~compare:Uid.compare in
-    let open Lwt.Infix in
-    Neg.tips lwt access store negotiator |> lwt_prj >>= fun () ->
-    Neg.run lwt lwt_fail lwt_io flow (prelude ctx) |> lwt_prj >>= fun uids ->
-    (* XXX(dinosaure): unsafe part. *)
-    let uids = List.map Uid.of_hex uids in
-    Neg.find_common lwt lwt_io flow fetch_cfg access store negotiator ctx uids
-    |> lwt_prj
-    >>= fun res ->
-    if res < 0 then Log.warn (fun m -> m "No common commits") ;
-    Neg.run lwt lwt_fail lwt_io flow (pack ctx) |> lwt_prj
+        Lwt_unix.write fd (Bytes.unsafe_of_string payload) off len
+        >>= fun len' -> go (off + len') (len - len') in
+    go 0 (String.length payload)
 
-  let connect ~capabilities path ~resolvers ?want domain_name store access
-      fetch_cfg =
+  let fs =
+    {
+      Thin.create;
+      Thin.append;
+      Thin.map;
+      Thin.close = (fun { fd; _ } -> Lwt_unix.close fd);
+    }
+
+  let digest ~kind ?(off = 0) ?len buf =
+    let len =
+      match len with Some len -> len | None -> Bigstringaf.length buf - off
+    in
+    let ctx = Digestif.SHA1.empty in
+
+    let ctx =
+      match kind with
+      | `A -> Digestif.SHA1.feed_string ctx (Fmt.strf "commit %d\000" len)
+      | `B -> Digestif.SHA1.feed_string ctx (Fmt.strf "tree %d\000" len)
+      | `C -> Digestif.SHA1.feed_string ctx (Fmt.strf "blob %d\000" len)
+      | `D -> Digestif.SHA1.feed_string ctx (Fmt.strf "tag %d\000" len) in
+    let ctx = Digestif.SHA1.feed_bigstring ctx ~off ~len buf in
+    Digestif.SHA1.(Uid.of_hex (to_hex (get ctx)))
+
+  let transmit_of_filename filename =
+    let filename = Fpath.to_string filename in
+    let ic = open_in filename in
+    let rs = Bytes.create De.io_buffer_size in
+    let go ~brk =
+      seek_in ic (Int64.to_int brk) ;
+      let len = input ic rs 0 (Bytes.length rs) in
+      Lwt.return (rs, 0, len) in
+    go
+
+  let ( >>? ) x f =
     let open Lwt.Infix in
-    Log.debug (fun m -> m "Try to connect to <%a>." Domain_name.pp domain_name) ;
-    Conduit_lwt_unix.flow resolvers domain_name >>= function
-    | Error err ->
-        Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
-        failwithf "%a" Conduit_lwt_unix.pp_error err
-    | Ok flow -> (
-        Log.info (fun m ->
-            m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
-        fetch ~capabilities ?want ~host:domain_name path flow store access
-          fetch_cfg
-        >>= fun () ->
-        Conduit_lwt.close flow >>= function
-        | Ok () -> Lwt.return_unit
-        | Error err -> failwithf "%a" Conduit_lwt.pp_error err)
+    x >>= function Ok x -> f x | Error _ as err -> Lwt.return err
+
+  let run ~light_load ~heavy_load stream filename =
+    let open Lwt.Infix in
+    ( Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp ->
+      Log.debug (fun m ->
+          m "Start to verify incoming PACK file (%a)." Fpath.pp tmp) ;
+      Thin.verify ~digest tmp fs stream >>? fun (n, uids, weight) ->
+      Log.debug (fun m -> m "Income PACK file: %Ld byte(s)." weight) ;
+      Thin.canonicalize ~light_load ~heavy_load
+        ~transmit:(transmit_of_filename tmp) filename fs n uids weight )
+    >>= function
+    | Ok weight ->
+        Log.debug (fun m ->
+            m "Store %Ld byte(s) into %a." weight Fpath.pp filename) ;
+        Lwt.return_unit
+    | Error err -> failwithf "%a" Rresult.R.pp_msg err
 end
+
+module Tuyau = struct
+  type t = Conduit_lwt.flow
+
+  type +'a fiber = 'a Lwt.t
+
+  include Conduit_lwt
+end
+
+module Fetch = Nss.Fetch.Make (Scheduler) (Lwt) (Tuyau) (Uid) (Ref)
+
+let connect ~capabilities path ~resolvers ?want domain_name store access
+    fetch_cfg pack =
+  let open Lwt.Infix in
+  Log.debug (fun m -> m "Try to connect to <%a>." Domain_name.pp domain_name) ;
+  Conduit_lwt_unix.flow resolvers domain_name >>= function
+  | Error err ->
+      Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
+      failwithf "%a" Conduit_lwt_unix.pp_error err
+  | Ok flow -> (
+      Log.info (fun m ->
+          m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
+      Fetch.fetch_v1 ~capabilities ?want ~host:domain_name path flow store
+        access fetch_cfg (fun (payload, off, len) ->
+          pack (Some (payload, off, len)))
+      >>= fun () ->
+      pack None ;
+      (* End of pack! *)
+      Conduit_lwt.close flow >>= function
+      | Ok () -> Lwt.return_unit
+      | Error err -> failwithf "%a" Conduit_lwt.pp_error err)
 
 let resolvers =
   Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
     (Conduit_lwt_unix_tcp.resolv_conf ~port:9418)
     Conduit.empty
 
-let multi_ack capabilities =
-  match
-    ( List.exists (( = ) `Multi_ack) capabilities,
-      List.exists (( = ) `Multi_ack_detailed) capabilities )
-  with
-  | true, true | false, true -> `Detailed
-  | true, false -> `Some
-  | false, false -> `None
-
-let fetch uri ?(version = `V1) ?(no_done = false) ?(capabilities = []) want path
-    =
+let fetch uri ?(version = `V1) ?(capabilities = []) want path filename =
+  let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
+  let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
   let access = access lwt path in
   let store = store_inj (Hashtbl.create 0x100) in
   match (version, Uri.scheme uri, Uri.host uri, Uri.path uri) with
   | `V1, Some "git", Some domain_name, path ->
-      let fetch_cfg =
-        {
-          Neg.stateless = false;
-          multi_ack = multi_ack capabilities;
-          no_done;
-          to_hex = Uid.to_hex;
-          of_hex = Uid.of_hex;
-        } in
+      let fetch_cfg = Nss.Fetch.configuration capabilities in
       let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
       let fiber =
         let open Lwt.Infix in
+        let stream, pack = Lwt_stream.create () in
         Lwt.catch
           (fun () ->
-            V1.connect ~capabilities path ~resolvers ~want domain_name store
-              access fetch_cfg
+            Lwt.join
+              [
+                connect ~capabilities path ~resolvers ~want domain_name store
+                  access fetch_cfg pack;
+                Crt.run ~light_load ~heavy_load
+                  (fun () -> Lwt_stream.get stream)
+                  filename;
+              ]
             >>= Lwt.return_ok)
           (function
             | Failure err -> Lwt.return_error (R.msgf "%s" err)
             | exn ->
+                Printexc.print_backtrace stderr ;
                 Log.err (fun m ->
                     m "Got an unexpected error: %s" (Printexc.to_string exn)) ;
                 Lwt.return_error (R.msgf "%s" (Printexc.to_string exn))) in
@@ -137,7 +165,7 @@ let fetch uri ?(version = `V1) ?(no_done = false) ?(capabilities = []) want path
   | _ -> R.error_msgf "Invalid uri: %a" Uri.pp uri
 
 let fetch all thin _depth no_done no_progress level style_renderer repository
-    want path =
+    want path filename =
   let capabilities =
     let ( $ ) x f = f x in
     [ `Multi_ack; `Multi_ack_detailed; `Side_band; `Side_band_64k; `Ofs_delta ]
@@ -157,7 +185,7 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
     | true, _ -> `All
     | false, _ :: _ -> `Some want
     | false, [] -> `All in
-  fetch repository ~no_done ~capabilities want path
+  fetch repository ~capabilities want path filename
 
 open Cmdliner
 
@@ -167,9 +195,8 @@ let uri =
   Arg.conv (parser, pp)
 
 let reference =
-  let parser x = Fpath.of_string x >>| Fpath.to_string in
-  let pp = Fmt.string in
-  Arg.conv (parser, pp)
+  let parser = R.ok <.> Ref.v in
+  Arg.conv (parser, Ref.pp)
 
 let directory =
   let parser x =
@@ -177,6 +204,11 @@ let directory =
     | Ok v when Sys.is_directory x && Fpath.is_abs v -> R.ok v
     | Ok v -> R.error_msgf "Invalid directory <%a>" Fpath.pp v
     | Error _ as err -> err in
+  let pp = Fpath.pp in
+  Arg.conv (parser, pp)
+
+let filename =
+  let parser = Fpath.of_string in
   let pp = Fpath.pp in
   Arg.conv (parser, pp)
 
@@ -228,6 +260,10 @@ let all =
   let doc = "Fetch all remote refs." in
   Arg.(value & flag & info [ "all" ] ~doc)
 
+let output =
+  let doc = "PACK file output." in
+  Arg.(required & opt (some filename) None & info [ "o"; "output" ] ~doc)
+
 let fetch =
   let doc = "Receive missing objects from another repository." in
   let exits = Term.default_exits in
@@ -256,5 +292,6 @@ let fetch =
       $ renderer
       $ repository
       $ references
-      $ local),
+      $ local
+      $ output),
     Term.info "fetch" ~doc ~exits ~man )

@@ -14,20 +14,15 @@ let _large_flush = 16384
 
 let _pipe_safe_flush = 32
 
-type ('uid, 'g, 's) exists =
-  ('uid, 'uid * int ref * int64, 'g) store ->
-  'uid ->
-  (('uid * int ref) option, 's) io
-
 type ('a, 's) raise = exn -> ('a, 's) io
 
 let run :
     type f s.
     s scheduler ->
     ('a, s) raise ->
-    (f, ([> ] as 'error), s) flow ->
+    (f, 'error, s) flow ->
     f ->
-    ('res, 'error) Smart.t ->
+    ('res, [ `Protocol of Smart.error ]) Smart.t ->
     ('res, s) io =
  fun { bind; return } raise { recv; send; pp_error } flow fiber ->
   let ( >>= ) = bind in
@@ -48,13 +43,11 @@ let run :
           then go (k len)
           else
             send flow tmp >>= function
-            | Ok shift ->
-              loop (Cstruct.shift tmp shift)
-            | Error err ->
-              failwithf "%a" pp_error err in
+            | Ok shift -> loop (Cstruct.shift tmp shift)
+            | Error err -> failwithf "%a" pp_error err in
         loop (Cstruct.of_string buffer ~off ~len)
     | Smart.Return v -> return v
-    | Smart.Error err -> failwithf "%a" pp_error err in
+    | Smart.Error (`Protocol err) -> failwithf "%a" Smart.pp_error err in
   go fiber
 
 (* XXX(dinosaure): this part is really **ugly**! But we must follow the same
@@ -75,30 +68,30 @@ let next_flush stateless count =
   then count lsl 1
   else count + _pipe_safe_flush
 
-type 'uid configuration = {
+type configuration = {
   stateless : bool;
   mutable multi_ack : [ `None | `Some | `Detailed ];
   no_done : bool;
-  of_hex : string -> 'uid;
-  to_hex : 'uid -> string;
 }
 
-let tips { bind; return } { exists; deref; locals; _ } store negotiator =
+type 'uid hex = { to_hex : 'uid -> string; of_hex : string -> 'uid }
+
+let tips { bind; return } { get; deref; locals; _ } store negotiator =
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
 
   let rec go = function
     | [] -> return ()
     | reference :: others ->
-        deref reference store
-        >>= Option.fold ~none:(return None) ~some:(fun uid -> exists uid store)
+        deref store reference
+        >>= Option.fold ~none:(return None) ~some:(fun uid -> get uid store)
         >>| Option.iter (fun obj -> Default.tip negotiator obj)
         >>= fun () -> go others in
   locals store >>= go
 
 let find_common ({ bind; return } as scheduler) io flow
-    ({ stateless; no_done; of_hex; to_hex; _ } as cfg) access store negotiator
-    ctx refs =
+    ({ stateless; no_done; _ } as cfg) { to_hex; of_hex } access store
+    negotiator ctx refs =
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
   let fold_left_s ~f a l =
@@ -108,7 +101,7 @@ let find_common ({ bind; return } as scheduler) io flow
     go a l in
   let fold acc remote_uid =
     Log.debug (fun m -> m "<%s> exists locally?" (to_hex remote_uid)) ;
-    access.exists remote_uid store >>= function
+    access.get remote_uid store >>= function
     | Some _ -> return acc
     | None -> return ((remote_uid, ref 0) :: acc) in
   fold_left_s ~f:fold [] refs >>| List.rev >>= function
@@ -167,7 +160,7 @@ let find_common ({ bind; return } as scheduler) io flow
                   | Smart.Negotiation.ACK_common uid
                   | Smart.Negotiation.ACK_ready uid
                   | Smart.Negotiation.ACK_continue uid -> (
-                      access.exists uid store >>= function
+                      access.get uid store >>= function
                       | None -> assert false
                       | Some obj ->
                           Default.ack scheduler ~parents:access.parents store

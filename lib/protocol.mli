@@ -22,6 +22,12 @@ module Advertised_refs : sig
     'ref list ->
     ('uid, 'ref) t ->
     'uid list
+
+  val map :
+    fuid:('uid0 -> 'uid1) ->
+    fref:('ref0 -> 'ref1) ->
+    ('uid0, 'ref0) t ->
+    ('uid1, 'ref1) t
 end
 
 module Proto_request : sig
@@ -113,9 +119,18 @@ module Status : sig
     commands : ('ref, 'ref * string) result list;
   }
 
+  val map : f:('a -> 'b) -> 'a t -> 'b t
+
   val pp : string t Fmt.t
+
   val to_result : 'string t -> (unit, string) result
-  val v : ?err:string -> (('uid, 'ref) Commands.command, ('uid, 'ref) Commands.command * string) result list ->
+
+  val v :
+    ?err:string ->
+    ( ('uid, 'ref) Commands.command,
+      ('uid, 'ref) Commands.command * string )
+    result
+    list ->
     'ref t
 end
 
@@ -141,7 +156,7 @@ module Decoder : sig
 
   val decode_pack :
     ?side_band:bool ->
-    push_pack:(string -> unit) ->
+    push_pack:(string * int * int -> unit) ->
     push_stdout:(string -> unit) ->
     push_stderr:(string -> unit) ->
     decoder ->
@@ -172,11 +187,7 @@ module Encoder : sig
   val encode_commands : encoder -> (string, string) Commands.t -> error state
 
   val encode_pack :
-    ?side_band:bool ->
-    ?stateless:bool ->
-    encoder ->
-    string ->
-    error state
+    ?side_band:bool -> ?stateless:bool -> encoder -> string -> error state
 
   val unsafe_encode_packet : encoder -> packet:string -> unit
 end

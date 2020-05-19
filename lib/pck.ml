@@ -1,5 +1,9 @@
 open Sigs
 
+let src = Logs.Src.create "pck"
+
+module Log = (val Logs.src_log src : Logs.LOG)
+
 type color = Black | White
 
 type none = Leaf
@@ -61,7 +65,69 @@ let memoize { bind; return } ~f =
           Hashtbl.replace tbl key value ;
           return value )
 
-let packer :
+let commands { bind; return } ~capabilities ~equal:equal_reference ~deref store
+    cmds have =
+  let ( >>= ) = bind in
+  let fold acc = function
+    | `Create reference -> (
+        deref store reference >>= function
+        | Some uid -> return (Smart.Commands.create uid reference :: acc)
+        | None -> return acc)
+    | `Delete reference ->
+        let uid, _, _ =
+          List.find
+            (fun (_, reference', peeled) ->
+              equal_reference reference reference' && peeled = false)
+            have in
+        return (Smart.Commands.delete uid reference :: acc)
+    | `Update (local, remote) -> (
+        deref store local >>= function
+        | None -> return acc
+        | Some uid_new ->
+            let uid_old, _, _ =
+              List.find
+                (fun (_, reference', peeled) ->
+                  equal_reference remote reference' && peeled = false)
+                have in
+            return (Smart.Commands.update uid_old uid_new remote :: acc)) in
+  let rec go a = function
+    | [] -> return a
+    | head :: tail -> fold a head >>= fun a -> go a tail in
+  go [] cmds >>= function
+  | [] -> return None
+  | head :: tail ->
+      return (Some (Smart.Commands.v ~capabilities ~others:tail head))
+
+let get_limits :
+    type uid ref.
+    compare:(uid -> uid -> int) ->
+    (uid * ref * bool) list ->
+    (uid, ref) Smart.Commands.command list ->
+    uid list * uid list =
+ fun ~compare:compare_uid have cmds ->
+  let module Set = Set.Make (struct
+    type t = uid
+
+    let compare = compare_uid
+  end) in
+  let exclude =
+    let fold acc (uid, _, _) = Set.add uid acc in
+    List.fold_left fold Set.empty have in
+  let exclude =
+    let fold acc = function
+      | Smart.Commands.Create _ -> acc
+      | Smart.Commands.Delete (uid, _) -> Set.add uid acc
+      | Smart.Commands.Update (uid, _, _) -> Set.add uid acc in
+    List.fold_left fold exclude cmds in
+  let sources =
+    let fold acc = function
+      | Smart.Commands.Update (_, uid, _) -> Set.add uid acc
+      | Smart.Commands.Create (uid, _) -> Set.add uid acc
+      | Smart.Commands.Delete _ -> acc in
+    List.fold_left fold Set.empty cmds in
+  (Set.elements exclude, Set.elements sources)
+
+let get_uncommon_objects :
     type uid g s.
     s scheduler ->
     compare:(uid -> uid -> int) ->
@@ -70,7 +136,7 @@ let packer :
     exclude:uid list ->
     sources:uid list ->
     (uid list, s) io =
- fun ({ bind; return } as scheduler) ~compare:compare_uid { exists; _ } store
+ fun ({ bind; return } as scheduler) ~compare:compare_uid { get; _ } store
      ~exclude ~sources ->
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
@@ -87,7 +153,7 @@ let packer :
           go r >>= fun r -> return (x :: r) in
     go l in
 
-  let tbl, get = memoize scheduler ~f:(fun uid -> exists uid store) in
+  let tbl, get = memoize scheduler ~f:(fun uid -> get uid store) in
 
   let module K = struct
     type t = uid

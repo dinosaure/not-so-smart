@@ -1,19 +1,29 @@
 (library
  (name smart)
+ (public_name nss.smart)
  (modules smart filter capability state protocol encoder decoder)
- (libraries rresult bigstringaf domain-name astring fmt))
+ (libraries rresult domain-name astring fmt))
 
 (library
  (name sigs)
+ (public_name nss.sigs)
  (modules sigs)
  (libraries cstruct))
 
 (library
  (name neg)
+ (public_name nss.neg)
  (modules neg find_common default)
- (libraries sigs logs psq cstruct smart))
+ (libraries sigs logs psq smart))
 
 (library
  (name pck)
+ (public_name nss.pck)
  (modules pck)
- (libraries sigs psq))
+ (libraries sigs psq logs smart))
+
+(library
+ (name nss)
+ (public_name nss)
+ (modules nss fetch push)
+ (libraries sigs neg pck))

@@ -36,6 +36,13 @@ module Advertised_refs = struct
 
   let capabilities { capabilities; _ } = capabilities
 
+  let map ~fuid ~fref { shallows; refs; capabilities; version } =
+    let shallows = List.map fuid shallows in
+    let refs =
+      List.map (fun (uid, ref, peeled) -> (fuid uid, fref ref, peeled)) refs
+    in
+    { shallows; refs; capabilities; version }
+
   let pp ppf { shallows; refs; capabilities; version } =
     Fmt.pf ppf "version %d@ " version ;
     match refs with
@@ -179,28 +186,42 @@ module Status = struct
     commands : ('ref, 'ref * string) result list;
   }
 
-  let pp ppf { result; commands; } =
+  let pp ppf { result; commands } =
     let ok_with_ref ppf ref = Fmt.pf ppf "%s:ok" ref in
     let error_with_ref ppf (ref, err) = Fmt.pf ppf "%s:%s" ref err in
     Fmt.pf ppf "{ @[<hov>result= %a;@ commands= @[<hov>%a@];@] }"
-      Fmt.(Dump.result ~ok:(const string "done") ~error:string) result
-      Fmt.(Dump.list (Dump.result ~ok:ok_with_ref ~error:error_with_ref)) commands
+      Fmt.(Dump.result ~ok:(const string "done") ~error:string)
+      result
+      Fmt.(Dump.list (Dump.result ~ok:ok_with_ref ~error:error_with_ref))
+      commands
 
   let to_result { result; _ } = result
 
-  let v ?(err= "An error occurred") cmds =
+  let map ~f { result; commands } =
+    let commands =
+      let fold = function
+        | Ok ref -> Ok (f ref)
+        | Error (ref, err) -> Error (f ref, err) in
+      List.map fold commands in
+    { result; commands }
+
+  let v ?(err = "An error occurred") cmds =
     let commands =
       let map = function
         | Ok (Commands.Create (_, ref))
         | Ok (Commands.Delete (_, ref))
-        | Ok (Commands.Update (_, _, ref)) -> Ok ref
-        | Error (( Commands.Create (_, ref)
-                 | Commands.Delete (_, ref)
-                 | Commands.Update (_, _, ref) ), err) -> Error (ref, err) in
+        | Ok (Commands.Update (_, _, ref)) ->
+            Ok ref
+        | Error
+            ( ( Commands.Create (_, ref)
+              | Commands.Delete (_, ref)
+              | Commands.Update (_, _, ref) ),
+              err ) ->
+            Error (ref, err) in
       List.map map cmds in
-    if List.exists (Rresult.R.is_error) commands
-    then { result= Error err; commands; }
-    else { result= Ok (); commands; }
+    if List.exists Rresult.R.is_error commands
+    then { result = Error err; commands }
+    else { result = Ok (); commands }
 end
 
 module Decoder = struct
@@ -412,8 +433,10 @@ module Decoder = struct
       let v = peek_pkt decoder in
       match String.Sub.head v with
       | Some '\001' ->
-          let tail = String.Sub.to_string (String.Sub.tail v) (* copy *) in
-          push_pack tail ;
+          let off = String.Sub.start_pos v + 1 in
+          let len = String.Sub.stop_pos v - off in
+          let buf = String.Sub.base_string v in
+          push_pack (buf, off, len) ;
           junk_pkt decoder ;
           prompt_pkt with_side_band decoder
       | Some '\002' ->
@@ -433,8 +456,10 @@ module Decoder = struct
       if String.Sub.is_empty v
       then return () decoder
       else
-        let v = String.Sub.to_string v in
-        push_pack v ;
+        let off = String.Sub.start_pos v + 1 in
+        let len = String.Sub.stop_pos v - off in
+        let buf = String.Sub.base_string v in
+        push_pack (buf, off, len) ;
         junk_pkt decoder ;
         prompt_pkt without_side_band decoder in
     if side_band
@@ -741,7 +766,8 @@ module Encoder = struct
     delayed_write_pkt first others encoder
 
   (* TODO(dinosaure): handle HTTP/stateless and side-band. *)
-  let encode_pack ?side_band:(_ = false) ?stateless:(_ = false) encoder payload =
+  let encode_pack ?side_band:(_ = false) ?stateless:(_ = false) encoder payload
+      =
     let rec go buffer off max encoder =
       if max = 0
       then flush kdone encoder

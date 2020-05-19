@@ -1,13 +1,31 @@
-module Sigs = Sigs
+(** Negotiation engine used to fetch objects from a Git repository.
+
+    This implementation does not have any Git logics or how to store properly a
+    Git object. However, it implements the negotiation engine used to fetch
+    objects from a Git repository.
+
+    Finally, it needs fews primitives to properly receive Git objects from the
+    state of a local Git repository:
+
+    - [exists] which tells to us if an object exists or not.
+    - [parents] to get parents of a commit.
+    - [deref] to de-reference a given reference.
+    - [locals] to get locals references of the Git repository.
+
+    The user must give to us a light store which is able to keep some mutable
+    values used by the negotiation engine.
+
+    [find_common] talks directly to the remote Git repository. *)
+
 open Sigs
 
-type 'uid configuration = {
+type configuration = {
   stateless : bool;
   mutable multi_ack : [ `None | `Some | `Detailed ];
   no_done : bool;
-  of_hex : string -> 'uid;
-  to_hex : 'uid -> string;
 }
+
+type 'uid hex = { to_hex : 'uid -> string; of_hex : string -> 'uid }
 
 type ('a, 's) raise = exn -> ('a, 's) io
 
@@ -18,16 +36,17 @@ val negotiator : compare:('uid -> 'uid -> int) -> 'uid negotiator
 val run :
   's scheduler ->
   ('res, 's) raise ->
-  ('flow, ([> ] as 'error), 's) flow ->
+  ('flow, 'error, 's) flow ->
   'flow ->
-  ('res, 'error) Smart.t ->
+  ('res, [ `Protocol of Smart.error ]) Smart.t ->
   ('res, 's) io
 
 val find_common :
   's scheduler ->
-  ('flow, ([> `Protocol of Smart.error ] as 'error), 's) flow ->
+  ('flow, 'error, 's) flow ->
   'flow ->
-  'uid configuration ->
+  configuration ->
+  'uid hex ->
   ('uid, 'ref, 'uid * int ref * int64, 'g, 's) access ->
   ('uid, 'uid * int ref * int64, 'g) store ->
   'uid negotiator ->

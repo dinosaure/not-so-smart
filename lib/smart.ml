@@ -17,11 +17,7 @@ module Witness = struct
     | Done : unit send
     | Flush : unit send
     | Commands : (string, string) Commands.t send
-    | Send_pack     : {
-        side_band : bool;
-        stateless : bool;
-      }
-        -> string send
+    | Send_pack     : { side_band : bool; stateless : bool } -> string send
 
   type 'a recv =
     | Advertised_refs : (string, string) Advertised_refs.t recv
@@ -29,7 +25,7 @@ module Witness = struct
     | Status : string Status.t recv
     | Recv_pack       : {
         side_band : bool;
-        push_pack : string -> unit;
+        push_pack : string * int * int -> unit;
         push_stdout : string -> unit;
         push_stderr : string -> unit;
       }
