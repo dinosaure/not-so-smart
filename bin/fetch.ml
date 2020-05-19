@@ -36,7 +36,7 @@ module Crt = struct
       if len <= 0
       then Lwt.return_unit
       else
-        Lwt_unix.write fd (Bytes.unsafe_of_string payload) off len
+        Lwt_unix.write fd (Bytes.of_string payload) off len
         >>= fun len' -> go (off + len') (len - len') in
     go 0 (String.length payload)
 
@@ -82,10 +82,14 @@ module Crt = struct
     ( Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp ->
       Log.debug (fun m ->
           m "Start to verify incoming PACK file (%a)." Fpath.pp tmp) ;
-      Thin.verify ~digest tmp fs stream >>? fun (n, uids, weight) ->
-      Log.debug (fun m -> m "Income PACK file: %Ld byte(s)." weight) ;
-      Thin.canonicalize ~light_load ~heavy_load
-        ~transmit:(transmit_of_filename tmp) filename fs n uids weight )
+      Thin.verify ~digest tmp fs stream >>? function
+      | (_, [], weight) ->
+        Bos.OS.Path.move tmp filename |> Lwt.return >>? fun () ->
+        Lwt.return_ok weight
+      | (n, uids, weight) ->
+        Log.debug (fun m -> m "Income PACK file: %Ld byte(s)." weight) ;
+        Thin.canonicalize ~light_load ~heavy_load
+          ~transmit:(transmit_of_filename tmp) filename fs n uids weight )
     >>= function
     | Ok weight ->
         Log.debug (fun m ->
@@ -100,9 +104,12 @@ module Tuyau = struct
   type +'a fiber = 'a Lwt.t
 
   include Conduit_lwt
+
+  let recv flow buf =
+    Log.debug (fun m -> m "Start to receive!") ; recv flow buf
 end
 
-module Fetch = Nss.Fetch.Make (Scheduler) (Lwt) (Tuyau) (Uid) (Ref)
+module Fetch = Nss.Fetch.Make (Scheduler) (struct include Lwt let yield = pause end) (Tuyau) (Uid) (Ref)
 
 let connect ~capabilities path ~resolvers ?want domain_name store access
     fetch_cfg pack =
@@ -117,8 +124,10 @@ let connect ~capabilities path ~resolvers ?want domain_name store access
           m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
       Fetch.fetch_v1 ~capabilities ?want ~host:domain_name path flow store
         access fetch_cfg (fun (payload, off, len) ->
-          pack (Some (payload, off, len)))
+            let v = String.sub payload off len in
+            pack (Some (v, 0, len)))
       >>= fun () ->
+      Log.debug (fun m -> m "PACK file downloaded!") ;
       pack None ;
       (* End of pack! *)
       Conduit_lwt.close flow >>= function

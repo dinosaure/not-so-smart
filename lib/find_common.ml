@@ -16,6 +16,8 @@ let _pipe_safe_flush = 32
 
 type ('a, 's) raise = exn -> ('a, 's) io
 
+let io_buffer_size = 65536
+
 let run :
     type f s.
     s scheduler ->
@@ -26,17 +28,22 @@ let run :
     ('res, s) io =
  fun { bind; return } raise { recv; send; pp_error } flow fiber ->
   let ( >>= ) = bind in
-  let tmp = Cstruct.create 0x1000 in
+  let tmp = Cstruct.create io_buffer_size in
   let failwithf fmt = Format.kasprintf (fun err -> raise (Failure err)) fmt in
   let rec go = function
     | Smart.Read { k; buffer; off; len } -> (
         let max = min (Cstruct.len tmp) len in
         recv flow (Cstruct.sub tmp 0 max) >>= function
-        | Ok `End_of_input -> failwithf "End of input"
+        | Ok `End_of_input ->
+          Log.err (fun m -> m "Unexpected end of input.") ;
+          failwith "End of input"
         | Ok (`Input len) ->
-            Cstruct.blit_to_bytes tmp 0 buffer off len ;
-            go (k len)
-        | Error err -> failwithf "%a" pp_error err)
+          Log.debug (fun m -> m "Got %d byte(s)." len) ;
+          Cstruct.blit_to_bytes tmp 0 buffer off len ;
+          go (k len)
+        | Error err ->
+          Log.err (fun m -> m "Got an error: %a." pp_error err) ;
+          failwithf "%a" pp_error err)
     | Smart.Write { k; buffer; off; len } ->
         let rec loop tmp =
           if Cstruct.len tmp = 0

@@ -160,7 +160,7 @@ module Decoder : sig
     push_stdout:(string -> unit) ->
     push_stderr:(string -> unit) ->
     decoder ->
-    (unit, [> error ]) state
+    (bool, [> error ]) state
 
   val decode_negotiation : decoder -> (string Negotiation.t, [> error ]) state
 

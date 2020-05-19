@@ -258,12 +258,11 @@ module Decoder = struct
 
   let is_new_line = function '\n' -> true | _ -> false
 
-  let peek_pkt decoder =
+  let peek_pkt ?(trim= true) decoder =
     let buf, off, len = peek_pkt decoder in
-    let buf = Bytes.unsafe_to_string buf in
+    let buf = Bytes.to_string buf in
     let res = String.Sub.v buf ~start:off ~stop:(off + len) in
-    let res = String.Sub.trim ~drop:is_new_line res in
-    res
+    if trim then String.Sub.trim ~drop:is_new_line res else res
 
   let is_zero = function '\000' -> true | _ -> false
 
@@ -429,8 +428,8 @@ module Decoder = struct
 
   let decode_pack ?(side_band = false) ~push_pack ~push_stdout ~push_stderr
       decoder =
-    let rec with_side_band decoder =
-      let v = peek_pkt decoder in
+    let with_side_band decoder =
+      let v = peek_pkt ~trim:false decoder in
       match String.Sub.head v with
       | Some '\001' ->
           let off = String.Sub.start_pos v + 1 in
@@ -438,30 +437,30 @@ module Decoder = struct
           let buf = String.Sub.base_string v in
           push_pack (buf, off, len) ;
           junk_pkt decoder ;
-          prompt_pkt with_side_band decoder
+          return true decoder
       | Some '\002' ->
           let tail = String.Sub.to_string (String.Sub.tail v) (* copy *) in
           push_stdout tail ;
           junk_pkt decoder ;
-          prompt_pkt with_side_band decoder
+          return true decoder
       | Some '\003' ->
           let tail = String.Sub.to_string (String.Sub.tail v) (* copy *) in
           push_stderr tail ;
           junk_pkt decoder ;
-          prompt_pkt with_side_band decoder
+          return true decoder
       | Some _ -> fail decoder (`Invalid_side_band (String.Sub.to_string v))
-      | None -> return () decoder in
-    let rec without_side_band decoder =
-      let v = peek_pkt decoder in
+      | None -> return false decoder in
+    let without_side_band decoder =
+      let v = peek_pkt ~trim:false decoder in
       if String.Sub.is_empty v
-      then return () decoder
+      then return false decoder
       else
         let off = String.Sub.start_pos v + 1 in
         let len = String.Sub.stop_pos v - off in
         let buf = String.Sub.base_string v in
         push_pack (buf, off, len) ;
         junk_pkt decoder ;
-        prompt_pkt without_side_band decoder in
+        return true decoder in
     if side_band
     then prompt_pkt with_side_band decoder
     else prompt_pkt without_side_band decoder

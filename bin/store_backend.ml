@@ -354,12 +354,7 @@ let locals :
         | Some (_, reference) -> Ref.v reference
         | None -> Ref.v line in
       return (List.map map refs)
-  | Ok (_, (run_info, _)) ->
-      Log.err
-        Bos.(
-          fun m ->
-            m "Got an error while: %a" Cmd.pp (OS.Cmd.run_info_cmd run_info)) ;
-      failwithf "Impossible to get local references"
+  | Ok _ -> return []
   | Error err ->
       Log.err (fun m -> m "Got an error [local]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err

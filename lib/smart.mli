@@ -204,7 +204,7 @@ val recv_pack :
   ?push_stdout:(string -> unit) ->
   ?push_stderr:(string -> unit) ->
   push_pack:(string * int * int -> unit) ->
-  unit recv
+  bool recv
 
 val ack : string Negotiation.t recv
 

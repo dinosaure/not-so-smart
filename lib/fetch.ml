@@ -8,6 +8,8 @@ module type IO = sig
   val return : 'a -> 'a t
 
   val fail : exn -> 'a t
+
+  val yield : unit -> unit t
 end
 
 module type UID = sig
@@ -137,5 +139,11 @@ struct
     |> prj
     >>= fun res ->
     if res < 0 then Log.warn (fun m -> m "No common commits") ;
-    Neg.run sched fail io flow (pack ctx) |> prj
+    let rec go () =
+      Neg.run sched fail io flow (pack ctx) |> prj >>= fun continue ->
+      if continue
+      then go ()
+      else return () in
+    Log.debug (fun m -> m "Start to download PACK file.") ;
+    go ()
 end

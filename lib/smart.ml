@@ -29,7 +29,7 @@ module Witness = struct
         push_stdout : string -> unit;
         push_stderr : string -> unit;
       }
-        -> unit recv
+        -> bool recv
     | Ack : string Negotiation.t recv
     | Shallows : string Shallow.t list recv
 end

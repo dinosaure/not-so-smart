@@ -2,7 +2,7 @@
  (name smart)
  (public_name nss.smart)
  (modules smart filter capability state protocol encoder decoder)
- (libraries rresult domain-name astring fmt))
+ (libraries hxd.string rresult domain-name astring fmt))
 
 (library
  (name sigs)

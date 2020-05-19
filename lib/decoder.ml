@@ -1,8 +1,5 @@
 type decoder = { buffer : Bytes.t; mutable pos : int; mutable max : int }
 
-let pp ppf { buffer; pos; max } =
-  Fmt.pf ppf "%S" (Bytes.sub_string buffer pos (max - pos))
-
 let io_buffer_size = 65536
 
 let decoder () = { buffer = Bytes.create io_buffer_size; pos = 0; max = 0 }
@@ -11,6 +8,9 @@ let decoder_from x =
   let max = String.length x in
   let buffer = Bytes.of_string x in
   { buffer; pos = 0; max }
+
+let pp ppf { buffer; pos; max; } =
+  Hxd_string.pp Hxd.O.default ppf (Bytes.sub_string buffer pos (max - pos))
 
 type error =
   [ `End_of_input
@@ -165,13 +165,14 @@ let prompt :
     decoder.pos <- 0) ;
   let rec go off =
     if off = Bytes.length decoder.buffer
+    && decoder.pos > 0
+    && not (at_least_one_pkt { decoder with max = off })
     then
-      Error
-        {
+      Error {
           error = `No_enough_space;
           buffer = decoder.buffer;
           committed = decoder.pos;
-        }
+      }
     else if not (at_least_one_pkt { decoder with max = off })
             (* XXX(dinosaure): we make a new decoder here and we did __not__ set
                [decoder.max] owned by end-user, and this is exactly what we want. *)

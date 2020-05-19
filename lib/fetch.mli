@@ -8,6 +8,8 @@ module type IO = sig
   val return : 'a -> 'a t
 
   val fail : exn -> 'a t
+
+  val yield : unit -> unit t
 end
 
 module type UID = sig
