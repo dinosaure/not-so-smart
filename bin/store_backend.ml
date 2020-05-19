@@ -19,9 +19,13 @@ let failwithf fmt = Fmt.kstrf (fun err -> raise (Failure err)) fmt
 
 let kind_of_object path uid =
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null Cmd.(v "git" % "cat-file" % "-t" % uid)
-  |> OS.Cmd.out_string ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_string ~trim:true
+          (run_out ~err:err_null Cmd.(v "git" % "cat-file" % "-t" % uid)))
+    ()
+  |> R.join
   |> function
   | Ok ("commit", (_, `Exited 0)) -> R.ok (Some `Commit)
   | Ok ("tree", (_, `Exited 0)) -> R.ok (Some `Tree)
@@ -45,10 +49,13 @@ let lightly_load { Sigs.return; _ } path uid =
           | `Tree -> `B
           | `Blob -> `C
           | `Tag -> `D in
-        OS.Dir.set_current path >>= fun () ->
-        OS.Cmd.run_out ~err:OS.Cmd.err_null
-          Cmd.(v "git" % "cat-file" % "-s" % uid)
-        |> OS.Cmd.out_string ~trim:true
+        OS.Dir.with_current path
+          OS.Cmd.(
+            fun () ->
+              out_string ~trim:true
+                (run_out ~err:err_null Cmd.(v "git" % "cat-file" % "-s" % uid)))
+          ()
+        |> R.join
         >>= fun (length, info) -> R.ok ((kind, int_of_string length), info)
   in
   match fiber with
@@ -76,10 +83,13 @@ let heavily_load { Sigs.return; _ } path uid =
           | `Tree -> (`B, "tree")
           | `Blob -> (`C, "blob")
           | `Tag -> (`D, "tag") in
-        OS.Dir.set_current path >>= fun () ->
-        OS.Cmd.run_out ~err:OS.Cmd.err_null
-          Cmd.(v "git" % "cat-file" % str % uid)
-        |> OS.Cmd.out_string ~trim:false
+        OS.Dir.with_current path
+          OS.Cmd.(
+            fun () ->
+              out_string ~trim:false
+                (run_out ~err:err_null Cmd.(v "git" % "cat-file" % str % uid)))
+          ()
+        |> R.join
         >>= fun (payload, info) -> R.ok ((kind, payload), info) in
   match fiber with
   | Ok ((kind, payload), (_, `Exited 0)) ->
@@ -98,10 +108,14 @@ let heavily_load { Sigs.return; _ } path uid =
 
 let parents_of_commit path uid =
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null
-    Cmd.(v "git" % "show" % "-s" % "--pretty=%P" % uid)
-  |> OS.Cmd.out_lines ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_lines ~trim:true
+          (run_out ~err:err_null
+             Cmd.(v "git" % "show" % "-s" % "--pretty=%P" % uid)))
+    ()
+  |> R.join
   |> function
   | Ok (uids, (_, `Exited 0)) -> R.ok uids
   | Ok (_, (run_info, _)) ->
@@ -116,10 +130,14 @@ let parents_of_commit path uid =
 
 let root_tree_of_commit path uid =
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null
-    Cmd.(v "git" % "show" % "-s" % "--pretty=%T" % uid)
-  |> OS.Cmd.out_string ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_string ~trim:true
+          (run_out ~err:err_null
+             Cmd.(v "git" % "show" % "-s" % "--pretty=%T" % uid)))
+    ()
+  |> R.join
   |> function
   | Ok (uid, (_, `Exited 0)) -> R.ok uid
   | Ok (_, (run_info, _)) ->
@@ -135,10 +153,14 @@ let root_tree_of_commit path uid =
 
 let commit_of_tag path uid =
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null
-    Cmd.(v "git" % "rev-parse" % Fmt.strf "%s^{commit}" uid)
-  |> OS.Cmd.out_string ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_string ~trim:true
+          (run_out ~err:err_null
+             Cmd.(v "git" % "rev-parse" % Fmt.strf "%s^{commit}" uid)))
+    ()
+  |> R.join
   |> function
   | Ok (uid, (_, `Exited 0)) -> R.ok uid
   | Ok (_, (run_info, _)) ->
@@ -161,9 +183,13 @@ let preds_of_tree path uid =
         | None -> R.error_msgf "Invalid line: %S" line)
     | _ -> R.error_msgf "Invalid line: %S" line in
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null Cmd.(v "git" % "ls-tree" % uid)
-  |> OS.Cmd.out_lines ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_lines ~trim:true
+          (run_out ~err:err_null Cmd.(v "git" % "ls-tree" % uid)))
+    ()
+  |> R.join
   |> function
   | Ok (lines, (_, `Exited 0)) ->
       let uids = List.map uid_of_line lines in
@@ -184,10 +210,14 @@ let preds_of_tree path uid =
 
 let timestamp_of_commit path uid =
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null
-    Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % uid)
-  |> OS.Cmd.out_string ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_string ~trim:true
+          (run_out ~err:OS.Cmd.err_null
+             Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % uid)))
+    ()
+  |> R.join
   |> function
   | Ok (ts, (_, `Exited 0)) -> R.ok (Int64.of_string ts)
   | Ok (_, (run_info, _)) ->
@@ -234,10 +264,14 @@ let get_object_for_packer { return; _ } path uid store =
 
 let get_commit_for_negotiation path (uid : Uid.t) =
   let open Bos in
-  OS.Dir.set_current path >>= fun () ->
-  OS.Cmd.run_out ~err:OS.Cmd.err_null
-    Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % (uid :> string))
-  |> OS.Cmd.out_string ~trim:true
+  OS.Dir.with_current path
+    OS.Cmd.(
+      fun () ->
+        out_string ~trim:true
+          (run_out ~err:OS.Cmd.err_null
+             Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % (uid :> string))))
+    ()
+  |> R.join
   >>= function
   | ts, (_, `Exited 0) ->
       let ts = Int64.of_string ts in
@@ -282,10 +316,14 @@ let deref :
  fun { Sigs.return; _ } path _ reference ->
   let fiber =
     let open Bos in
-    OS.Dir.set_current path >>= fun () ->
-    OS.Cmd.run_out ~err:OS.Cmd.err_null
-      Cmd.(v "git" % "show-ref" % "--hash" % (reference :> string))
-    |> OS.Cmd.out_string ~trim:true in
+    OS.Dir.with_current path
+      OS.Cmd.(
+        fun () ->
+          out_string ~trim:true
+            (run_out ~err:OS.Cmd.err_null
+               Cmd.(v "git" % "show-ref" % "--hash" % (reference :> string))))
+      ()
+    |> R.join in
   match fiber with
   | Ok (uid, (_, `Exited 0)) -> return (Some (Uid.of_hex uid))
   | Ok _ -> return None
@@ -302,9 +340,13 @@ let locals :
  fun { Sigs.return; _ } path _ ->
   let fiber =
     let open Bos in
-    OS.Dir.set_current path >>= fun () ->
-    OS.Cmd.run_out ~err:OS.Cmd.err_null Cmd.(v "git" % "show-ref")
-    |> OS.Cmd.out_lines ~trim:true in
+    OS.Dir.with_current path
+      OS.Cmd.(
+        fun () ->
+          out_lines ~trim:true
+            (run_out ~err:OS.Cmd.err_null Cmd.(v "git" % "show-ref")))
+      ()
+    |> R.join in
   match fiber with
   | Ok (refs, (_, `Exited 0)) ->
       let map line =
