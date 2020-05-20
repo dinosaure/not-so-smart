@@ -251,10 +251,10 @@ module Decoder = struct
     | `Invalid_command_result raw ->
         Fmt.pf ppf "Invalid result command (%S)" raw
 
-  let rec prompt_pkt k decoder =
+  let rec prompt_pkt ?strict k decoder =
     if at_least_one_pkt decoder
     then k decoder
-    else prompt (prompt_pkt k) decoder
+    else prompt ?strict (prompt_pkt ?strict k) decoder
 
   let is_new_line = function '\n' -> true | _ -> false
 
@@ -462,8 +462,8 @@ module Decoder = struct
         junk_pkt decoder ;
         return true decoder in
     if side_band
-    then prompt_pkt with_side_band decoder
-    else prompt_pkt without_side_band decoder
+    then prompt_pkt ~strict:false with_side_band decoder
+    else prompt_pkt ~strict:false without_side_band decoder
 
   let decode_shallows decoder =
     let rec go acc decoder =
@@ -521,9 +521,10 @@ module Decoder = struct
   let rec bind x ~f =
     match x with
     | Decoder.Done v -> f v
-    | Decoder.Read { buffer; off; len; continue } ->
+    | Decoder.Read { buffer; off; len; continue; eof } ->
         let continue len = bind (continue len) ~f in
-        Decoder.Read { buffer; off; len; continue }
+        let eof () = bind (eof ()) ~f in
+        Decoder.Read { buffer; off; len; continue; eof }
     | Decoder.Error _ as err -> err
 
   let ( >>= ) x f = bind x ~f

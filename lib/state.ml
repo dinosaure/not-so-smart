@@ -1,7 +1,7 @@
 let ( <.> ) f g x = f (g x)
 
 type ('a, 'err) t =
-  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t }
+  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t; eof : unit -> ('a, 'err) t }
   | Write  of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
   | Return of 'a
   | Error  of 'err
@@ -82,11 +82,14 @@ module Scheduler
 struct
   type error = Value.error
 
-  let rec go ~f m len =
-    match m len with
+  let rec go ~f m =
+    match m with
     | Return v -> f v
-    | Read { k; off; len; buffer } -> Read { k = go ~f k; off; len; buffer }
-    | Write { k; off; len; buffer } -> Write { k = go ~f k; off; len; buffer }
+    | Read { k; off; len; buffer; eof; } ->
+      Read { k = go ~f <.> k; off; len; buffer
+           ; eof= go ~f <.> eof }
+    | Write { k; off; len; buffer } ->
+      Write { k = go ~f <.> k; off; len; buffer }
     | Error err -> Error err
 
   let bind : ('a, 'err) t -> f:('a -> ('b, 'err) t) -> ('b, 'err) t =
@@ -94,8 +97,8 @@ struct
     match m with
     | Return v -> f v
     | Error err -> Error err
-    | Read { k; off; len; buffer } -> Read { k = go ~f k; off; len; buffer }
-    | Write { k; off; len; buffer } -> Write { k = go ~f k; off; len; buffer }
+    | Read _ -> go ~f m
+    | Write _ -> go ~f m
 
   let ( let* ) m f = bind m ~f
 
@@ -113,7 +116,9 @@ struct
       | Return () -> k ctx
       | Write { k; buffer; off; len } ->
           Write { k = go <.> k; buffer; off; len }
-      | Read { k; buffer; off; len } -> Read { k = go <.> k; buffer; off; len }
+      | Read { k; buffer; off; len; eof } ->
+        Read { k = go <.> k; buffer; off; len
+             ; eof= go <.> eof }
       | Error err -> Error (`Protocol err) in
     go (Value.encode (Context.encoder ctx) w v)
 
@@ -130,7 +135,8 @@ struct
       ('b, [> `Protocol of error ]) t =
    fun ctx w k ->
     let rec go : (a, 'err) t -> ('b, [> `Protocol of error ]) t = function
-      | Read { k; buffer; off; len } -> Read { k = go <.> k; buffer; off; len }
+      | Read { k; buffer; off; len; eof } -> Read { k = go <.> k; buffer; off; len
+                                                  ; eof = go <.> eof }
       | Write { k; buffer; off; len } ->
           Write { k = go <.> k; buffer; off; len }
       | Return v -> k ctx v
@@ -143,7 +149,8 @@ struct
 
   let reword_error f x =
     let rec go = function
-      | Read { k; buffer; off; len } -> Read { k = go <.> k; buffer; off; len }
+      | Read { k; buffer; off; len; eof; } -> Read { k = go <.> k; buffer; off; len
+                                                   ; eof = go <.> eof }
       | Write { k; buffer; off; len } ->
           Write { k = go <.> k; buffer; off; len }
       | Return v -> Return v

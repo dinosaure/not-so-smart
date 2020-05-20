@@ -104,9 +104,6 @@ module Tuyau = struct
   type +'a fiber = 'a Lwt.t
 
   include Conduit_lwt
-
-  let recv flow buf =
-    Log.debug (fun m -> m "Start to receive!") ; recv flow buf
 end
 
 module Fetch = Nss.Fetch.Make (Scheduler) (struct include Lwt let yield = pause end) (Tuyau) (Uid) (Ref)

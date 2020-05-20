@@ -43,6 +43,7 @@ type ('v, 'err) state =
       off : int;
       len : int;
       continue : int -> ('v, 'err) state;
+      eof : unit -> ('v, 'err) state;
     }
   | Error of 'err info
 
@@ -152,10 +153,63 @@ let at_least_one_pkt decoder =
 
 (* no header *)
 
+let get_pkt_len decoder =
+  let len = decoder.max - decoder.pos in
+  if len >= 4 then
+    let pkt_len = to_int ~base:16 ~off:decoder.pos ~len:4 decoder.buffer in
+    Some pkt_len
+  else None
+
+(* XXX(dinosaure): to be able to do a /gentle close/, we do a hack.
+   It seems that [git] is a bit /obtuse/ when it receives something
+   which is not expected.
+
+   For example:
+   C> 0009done\n
+   C> 0000
+
+   Where [git] expects only:
+   C> 0009done\n
+
+   seems to cause a drastic connection close by the server when we want to
+   download the PACK file. In such case, our decoder will be stick on the loop
+   and waiting more where it received a partial chunk of the current /PKT/.
+
+   So we provide an [eof] function which will (depends on [strict]):
+   - return an error [`End_of_input] as usual
+   - reformat the current /PKT/ to be able to emit the partial chunk
+     to another process.
+
+   The second case, we are able to unlock the ability to properly close the
+   connection and to the other process (eg. [carton]) that we can not have more
+   that what we have (more precisely, from a given /pusher/ to the stream used
+   by the other process, we are able to do [pusher None]). By this way, we are
+   able to unlock the /waiting-state/ of the other process. Then, in our side,
+   we properly call [Flow.close].
+
+   However, the error is a protocol error. The second branch [reliable_pkt] should
+   never appear! It permits for us to gently close the connection and fallback
+   the protocol error to another layer (eg. [carton] when it received finally a
+   __not-full__ PACK file). The goal is to be more resilient at this layer. *)
+
+let error_end_of_input decoder () =
+  fail decoder `End_of_input
+
+let reliable_pkt k decoder () =
+  match get_pkt_len decoder with
+  | Some _len ->
+    let hdr = Fmt.strf "%04X" (decoder.max - decoder.pos) in
+    Bytes.blit_string hdr 0 decoder.buffer decoder.pos 4 ; (* unsafe! *)
+    k decoder
+  | None ->
+    Bytes.blit_string "0000" 0 decoder.buffer decoder.pos 4 ;
+    decoder.max <- decoder.pos + 4 ;
+    k decoder
+
 let prompt :
-    (decoder -> ('v, ([> error ] as 'err)) state) -> decoder -> ('v, 'err) state
+    ?strict:bool -> (decoder -> ('v, ([> error ] as 'err)) state) -> decoder -> ('v, 'err) state
     =
- fun k decoder ->
+ fun ?(strict= true) k decoder ->
   if decoder.pos > 0
   then (
     (* XXX(dinosaure): compress *)
@@ -181,8 +235,11 @@ let prompt :
         {
           buffer = decoder.buffer;
           off;
-          len = Bytes.length decoder.buffer - off;
+          len= (Bytes.length decoder.buffer) - off;
           continue = (fun len -> go (off + len));
+          eof = if strict
+                then error_end_of_input decoder (* fail *)
+                else ( decoder.max <- off ; reliable_pkt k decoder )
         }
     else (
       decoder.max <- off ;

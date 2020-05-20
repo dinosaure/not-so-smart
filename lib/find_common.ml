@@ -31,14 +31,15 @@ let run :
   let tmp = Cstruct.create io_buffer_size in
   let failwithf fmt = Format.kasprintf (fun err -> raise (Failure err)) fmt in
   let rec go = function
-    | Smart.Read { k; buffer; off; len } -> (
+    | Smart.Read { k; buffer; off; len; eof; } -> (
         let max = min (Cstruct.len tmp) len in
+        Log.debug (fun m -> m "Start to read %d byte(s)." max) ;
         recv flow (Cstruct.sub tmp 0 max) >>= function
         | Ok `End_of_input ->
-          Log.err (fun m -> m "Unexpected end of input.") ;
-          failwith "End of input"
+          Log.debug (fun m -> m "Got end of input.") ;
+          go (eof ())
         | Ok (`Input len) ->
-          Log.debug (fun m -> m "Got %d byte(s)." len) ;
+          Log.debug (fun m -> m "Got %d/%d byte(s)." len max) ;
           Cstruct.blit_to_bytes tmp 0 buffer off len ;
           go (k len)
         | Error err ->
@@ -52,9 +53,12 @@ let run :
             send flow tmp >>= function
             | Ok shift -> loop (Cstruct.shift tmp shift)
             | Error err -> failwithf "%a" pp_error err in
+        Log.debug (fun m -> m "Write %S.\n%!" (String.sub buffer off len)) ;
         loop (Cstruct.of_string buffer ~off ~len)
     | Smart.Return v -> return v
-    | Smart.Error (`Protocol err) -> failwithf "%a" Smart.pp_error err in
+    | Smart.Error (`Protocol err) ->
+      Log.err (fun m -> m "Got a protocol error: %a." Smart.pp_error err) ;
+      failwithf "%a" Smart.pp_error err in
   go fiber
 
 (* XXX(dinosaure): this part is really **ugly**! But we must follow the same
@@ -213,8 +217,7 @@ let find_common ({ bind; return } as scheduler) io flow
       go negotiator >>= fun () ->
       (if (not !got_ready) || not no_done
       then (
-        unsafe_write_done ctx ;
-        run scheduler raise io flow Smart.(send ctx flush ()))
+        run scheduler raise io flow Smart.(send ctx negotiation_done ()))
       else return ())
       >>= fun () ->
       if !retval <> 0
@@ -223,8 +226,9 @@ let find_common ({ bind; return } as scheduler) io flow
         incr flushes) ;
       (if (not !got_ready) || not no_done
       then
-        run scheduler raise io flow Smart.(recv ctx shallows)
-        >>= fun _shallows -> return ()
+        ( Log.debug (fun m -> m "Negotiation is done!" )
+        ; run scheduler raise io flow Smart.(recv ctx shallows)
+        >>= fun _shallows -> return () )
       else return ())
       >>= fun () ->
       let rec go () =

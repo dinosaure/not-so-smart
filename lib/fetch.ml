@@ -142,7 +142,7 @@ struct
     let rec go () =
       Neg.run sched fail io flow (pack ctx) |> prj >>= fun continue ->
       if continue
-      then go ()
+      then IO.yield () >>= go
       else return () in
     Log.debug (fun m -> m "Start to download PACK file.") ;
     go ()

@@ -32,6 +32,7 @@ type ('v, 'err) state =
       off : int;
       len : int;
       continue : int -> ('v, 'err) state;
+      eof : unit -> ('v, 'err) state;
     }
   | Error of 'err info
 
@@ -57,7 +58,7 @@ val at_least_one_line : decoder -> bool
 val at_least_one_pkt : decoder -> bool
 
 val prompt :
-  (decoder -> ('v, ([> error ] as 'err)) state) -> decoder -> ('v, 'err) state
+  ?strict:bool -> (decoder -> ('v, ([> error ] as 'err)) state) -> decoder -> ('v, 'err) state
 
 val peek_while_eol : decoder -> bytes * int * int
 
