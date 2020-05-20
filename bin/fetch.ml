@@ -79,7 +79,8 @@ module Crt = struct
 
   let run ~light_load ~heavy_load stream filename =
     let open Lwt.Infix in
-    ( Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp ->
+    ( Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun _tmp ->
+      let tmp = Fpath.v "tmp.pack" in
       Log.debug (fun m ->
           m "Start to verify incoming PACK file (%a)." Fpath.pp tmp) ;
       Lwt.catch
