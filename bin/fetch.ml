@@ -85,6 +85,7 @@ module Crt = struct
       Lwt.catch
         (fun () -> Thin.verify ~digest tmp fs stream)
         (fun exn ->
+           Log.err (fun m -> m "Got an error: %s." (Printexc.to_string exn)) 
            Printexc.print_backtrace stdout ;
            Lwt.return_error (`Msg (Printexc.to_string exn))) >>? function
       | (_, [], weight) ->
