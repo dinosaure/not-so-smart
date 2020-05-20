@@ -84,6 +84,7 @@ module Crt = struct
           m "Start to verify incoming PACK file (%a)." Fpath.pp tmp) ;
       Thin.verify ~digest tmp fs stream >>? function
       | (_, [], weight) ->
+        Log.debug (fun m -> m "Given PACK file is not thin.") ;
         Bos.OS.Path.move tmp filename |> Lwt.return >>? fun () ->
         Lwt.return_ok weight
       | (n, uids, weight) ->
