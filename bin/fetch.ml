@@ -82,7 +82,11 @@ module Crt = struct
     ( Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp ->
       Log.debug (fun m ->
           m "Start to verify incoming PACK file (%a)." Fpath.pp tmp) ;
-      Thin.verify ~digest tmp fs stream >>? function
+      Lwt.catch
+        (fun () -> Thin.verify ~digest tmp fs stream)
+        (fun exn ->
+           Printexc.print_backtrace stdout ;
+           Lwt.return_error (`Msg (Printexc.to_string exn))) >>? function
       | (_, [], weight) ->
         Log.debug (fun m -> m "Given PACK file is not thin.") ;
         Bos.OS.Path.move tmp filename |> Lwt.return >>? fun () ->
