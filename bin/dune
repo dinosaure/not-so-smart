@@ -1,6 +1,3 @@
 (executable
  (name not_so_smart)
- (foreign_stubs
-   (language c) (names readable))
- (libraries nss.git hxd.string conduit-lwt-unix conduit-lwt-unix.tcp bos nss pck carton-lwt
-   digestif.c uri fmt.tty fmt.cli logs.fmt logs.cli cmdliner))
+ (libraries nss.git conduit-lwt-unix conduit-lwt-unix.tcp bos digestif.c uri fmt.tty fmt.cli logs.fmt logs.cli cmdliner))

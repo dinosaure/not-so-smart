@@ -66,6 +66,45 @@ module Make
 
   let ( >>? ) = Lwt_result.bind
 
+  module CartonSched = Carton.Make(Lwt)
+
+  let sched =
+    let open Lwt.Infix in
+    let open CartonSched in
+    { Carton.bind= (fun x f -> inj (prj x >>= fun x -> prj (f x)))
+    ; Carton.return= (fun x -> inj (Lwt.return x)) }
+
+  let finish_it ~pack ~weight ~where offsets =
+    let open Lwt.Infix in
+    Append.create pack >>? fun fd ->
+    let zl_buffer = De.bigstring_create De.io_buffer_size in
+    let allocate bits = De.make_window ~bits in
+    let pack = Carton.Dec.make fd ~allocate ~z:zl_buffer ~uid_ln:Uid.length ~uid_rw:Uid.of_raw_string
+        (fun uid -> Hashtbl.find where uid) in
+    let map fd ~pos len =
+      let max = Int64.sub weight pos in
+      let len = min max (Int64.of_int len) in
+      let len = Int64.to_int len in
+      CartonSched.inj (Append.map fd ~pos len) in
+    let rec go entries = function
+      | [] -> Lwt.return entries
+      | (offset, crc) :: offsets ->
+        Lwt.catch (fun () ->
+        Carton.Dec.weight_of_offset sched
+          ~map pack ~weight:Carton.Dec.null ~cursor:offset |> CartonSched.prj >>= fun weight ->
+        let raw = Carton.Dec.make_raw ~weight in
+        Carton.Dec.of_offset sched
+          ~map pack raw ~cursor:offset |> CartonSched.prj >>= fun v ->
+        let kind = Carton.Dec.kind v in
+        let raw = Carton.Dec.raw v in
+        let len = Carton.Dec.len v in
+        let uid = digest ~kind ~off:0 ~len raw in
+        go ({ Carton.Dec.Idx.offset; crc; uid; } :: entries) offsets)
+          (fun exn ->
+          Printexc.print_backtrace stdout ; Lwt.fail exn) in
+    go [] offsets >>= fun entries ->
+    Append.close fd >>? fun () -> Lwt.return_ok entries
+
   let run_pck ~light_load ~heavy_load stream ~src ~dst =
     let open Rresult in
     let open Lwt.Infix in
@@ -76,19 +115,30 @@ module Make
         | Invalid_argument err -> Lwt.return_error (R.msg err)
         | exn -> Lwt.return_error (`Exn exn)) >>= function
     | Error _ as err -> Lwt.return err
-    | Ok (_, [], entries, _weight, uid) ->
+    | Ok (_, [], [], entries, _weight, uid) ->
       Append.move ~src ~dst
       >|= R.reword_error (R.msgf "%a" Append.pp_error)
       >>? fun () -> Lwt.return_ok (uid, Array.of_list entries)
-    | Ok (n, uids, entries, weight, _uid) ->
+    | Ok (n, uids, unresolveds, entries, weight, _uid) ->
       Thin.canonicalize
         ~light_load ~heavy_load
-        ~src ~dst fs n uids weight >>? fun (shift, _weight, uid, entries') ->
+        ~src ~dst fs n uids weight >>? fun (shift, weight, uid, entries') ->
+      let where = Hashtbl.create 0x100 in
       let entries =
-        let fold ({ Carton.Dec.Idx.offset; _ } as entry) =
-          { entry with Carton.Dec.Idx.offset= Int64.add offset shift } in
+        let fold ({ Carton.Dec.Idx.offset; uid; _ } as entry) =
+          let offset = Int64.add offset shift in
+          Hashtbl.add where uid offset ;
+          { entry with Carton.Dec.Idx.offset } in
         List.map fold entries in
-      let entries = entries' @ entries in
+      List.iter (fun { Carton.Dec.Idx.offset; uid; _ } -> Hashtbl.add where uid offset) entries' ;
+      let unresolveds =
+        let fold (offset, crc) =
+          Int64.add offset shift, crc in
+        List.map fold unresolveds in
+      finish_it ~pack:dst ~weight ~where unresolveds
+      >|= R.reword_error (R.msgf "%a" Append.pp_error) >>? fun entries'' ->
+      let entries = List.rev_append entries' entries in
+      let entries = List.rev_append entries'' entries in
       Lwt.return_ok (uid, Array.of_list entries)
 
   module Enc = Carton.Dec.Idx.N(Uid)
@@ -147,6 +197,7 @@ module Make
       let stream, pusher = Lwt_stream.create () in
       let stream () = Lwt_stream.get stream in
       let run () =
+        Fmt.epr ">>> START TO RUN FIBER.\n%!" ;
         Lwt.both
           (fetch_v1 ~capabilities path ~resolvers ~want domain_name store access fetch_cfg pusher)
           (run ~light_load ~heavy_load stream ~src ~dst ~idx)

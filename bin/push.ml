@@ -10,46 +10,6 @@ let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
 let ( <.> ) f g = fun x -> f (g x)
 
-module Append = struct
-  type t = Lwt_unix.file_descr
-  type uid = Fpath.t
-  type error = [ `Msg of string ]
-
-  type +'a fiber = 'a Lwt.t
-
-  open Lwt.Infix
-
-  let pp_error = Rresult.R.pp_msg
-
-  let create fpath =
-    Lwt_unix.openfile (Fpath.to_string fpath) Unix.[ O_CREAT; O_RDWR ] 0o644 >>= Lwt.return_ok
-
-  let map fd ~pos len =
-    let res = Mmap.V1.map_file (Lwt_unix.unix_file_descr fd)
-        ~pos Bigarray.char Bigarray.c_layout false [| len |] in
-    let res = Bigarray.array1_of_genarray res in
-    Lwt.return res
-
-  let append fd str =
-    let rec go off len =
-      Lwt_unix.write_string fd str off len >>= fun len' ->
-      if len - len' <= 0 then Lwt.return_unit
-      else go (off + len') (len - len') in
-    go 0 (String.length str)
-
-  let move ~src ~dst =
-    Lwt_unix.rename (Fpath.to_string src) (Fpath.to_string dst) >>= fun () ->
-    Lwt.return_ok ()
-
-  let close fd =
-    Lwt_unix.close fd >>= fun () ->
-    Lwt.return_ok ()
-
-  let delete fpath =
-    Lwt_unix.unlink (Fpath.to_string fpath) >>= fun () ->
-    Lwt.return_ok ()
-end
-
 module Git = Git.Make (Scheduler) (Append) (Uid) (Ref)
 
 let resolvers =
@@ -78,7 +38,7 @@ let push level style_renderer repository cmds path =
   Logs.set_level level ;
   Logs.set_reporter (Logs_fmt.reporter ~dst:Fmt.stderr ()) ;
   Logs.debug (fun m -> m "Process %d command(s)." (List.length cmds)) ;
-  push repository ~capabilities cmds path
+  Lwt_main.run (push repository ~capabilities cmds path)
 
 open Cmdliner
 
