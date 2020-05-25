@@ -8,7 +8,7 @@
  (name sigs)
  (public_name nss.sigs)
  (modules sigs)
- (libraries cstruct))
+ (libraries fmt cstruct))
 
 (library
  (name neg)
@@ -27,3 +27,9 @@
  (public_name nss)
  (modules nss fetch push)
  (libraries sigs neg pck))
+
+(library
+ (name git)
+ (public_name nss.git)
+ (modules git)
+ (libraries conduit-lwt uri sigs nss digestif carton-lwt))

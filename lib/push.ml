@@ -1,54 +1,8 @@
 open Rresult
 open Sigs
 
-module type IO = sig
-  type +'a t
-
-  val bind : 'a t -> ('a -> 'b t) -> 'b t
-
-  val return : 'a -> 'a t
-
-  val fail : exn -> 'a t
-
-  val async : (unit -> unit t) -> unit
-end
-
-module type UID = sig
-  type t
-
-  val of_hex : string -> t
-
-  val to_hex : t -> string
-
-  val compare : t -> t -> int
-end
-
-module type REF = sig
-  type t
-
-  val v : string -> t
-
-  val equal : t -> t -> bool
-
-  val to_string : t -> string
-end
-
-module type FLOW = sig
-  type +'a fiber
-
-  type t
-
-  type error
-
-  val recv :
-    t -> Cstruct.t -> ([ `End_of_input | `Input of int ], error) result fiber
-
-  val send : t -> Cstruct.t -> (int, error) result fiber
-
-  val pp_error : error Fmt.t
-end
-
-type configuration = { stateless : bool }
+type configuration =
+  { stateless : bool }
 
 let configuration ?(stateless = true) () = { stateless }
 
@@ -124,7 +78,7 @@ struct
         >>= fun uids ->
         Log.debug (fun m ->
             m "Prepare a pack of %d object(s)." (List.length uids)) ;
-        pack uids >>= fun (stream, process) ->
+        let stream = pack uids in
         let pack =
           Smart.send_pack ~stateless:push_cfg.stateless false
           (* side-band *) in
@@ -145,7 +99,6 @@ struct
           | Some payload ->
               Neg.run sched fail io flow Smart.(send ctx pack payload) |> prj
               >>= fun () -> go () in
-        IO.async (fun () -> process) ;
         go () >>= fun status ->
         match Smart.Status.to_result status with
         | Ok () ->

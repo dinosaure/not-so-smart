@@ -2,5 +2,5 @@
  (name not_so_smart)
  (foreign_stubs
    (language c) (names readable))
- (libraries hxd.string conduit-lwt-unix conduit-lwt-unix.tcp bos nss pck carton-lwt
+ (libraries nss.git hxd.string conduit-lwt-unix conduit-lwt-unix.tcp bos nss pck carton-lwt
    digestif.c uri fmt.tty fmt.cli logs.fmt logs.cli cmdliner))

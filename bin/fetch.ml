@@ -10,175 +10,76 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-module Crt = struct
-  module Thin = Carton_lwt.Thin.Make (Uid)
+module Append = struct
+  type t = Lwt_unix.file_descr
+  type uid = Fpath.t
+  type error = [ `Msg of string ]
 
-  type fd = { fd : Lwt_unix.file_descr; max : int64 }
+  type +'a fiber = 'a Lwt.t
 
-  let create filename =
-    let open Lwt.Infix in
-    let filename = Fpath.to_string filename in
-    Lwt_unix.openfile filename Unix.[ O_CREAT; O_RDWR ] 0o644 >>= fun fd ->
-    let st = Unix.LargeFile.stat filename in
-    Lwt.return_ok { fd; max = st.st_size }
+  open Lwt.Infix
 
-  let map { fd; _ } ~pos len =
-    let res =
-      Mmap.V1.map_file
-        (Lwt_unix.unix_file_descr fd)
+  let pp_error = Rresult.R.pp_msg
+
+  let create fpath =
+    Lwt_unix.openfile (Fpath.to_string fpath) Unix.[ O_CREAT; O_RDWR ] 0o644 >>= Lwt.return_ok
+
+  let map fd ~pos len =
+    let res = Mmap.V1.map_file (Lwt_unix.unix_file_descr fd)
         ~pos Bigarray.char Bigarray.c_layout false [| len |] in
     let res = Bigarray.array1_of_genarray res in
     Lwt.return res
 
-  let append { fd; _ } payload =
-    let open Lwt.Infix in
+  let append fd str =
     let rec go off len =
-      if len <= 0
-      then Lwt.return_unit
-      else
-        Lwt_unix.write fd (Bytes.of_string payload) off len
-        >>= fun len' -> go (off + len') (len - len') in
-    go 0 (String.length payload)
+      Lwt_unix.write_string fd str off len >>= fun len' ->
+      if len - len' <= 0 then Lwt.return_unit
+      else go (off + len') (len - len') in
+    go 0 (String.length str)
 
-  let fs =
-    {
-      Thin.create;
-      Thin.append;
-      Thin.map;
-      Thin.close = (fun { fd; _ } -> Lwt_unix.close fd);
-    }
+  let move ~src ~dst =
+    Lwt_unix.rename (Fpath.to_string src) (Fpath.to_string dst) >>= fun () ->
+    Lwt.return_ok ()
 
-  let digest ~kind ?(off = 0) ?len buf =
-    let len =
-      match len with Some len -> len | None -> Bigstringaf.length buf - off
-    in
-    let ctx = Digestif.SHA1.empty in
+  let close fd =
+    Lwt_unix.close fd >>= fun () ->
+    Lwt.return_ok ()
 
-    let ctx =
-      match kind with
-      | `A -> Digestif.SHA1.feed_string ctx (Fmt.strf "commit %d\000" len)
-      | `B -> Digestif.SHA1.feed_string ctx (Fmt.strf "tree %d\000" len)
-      | `C -> Digestif.SHA1.feed_string ctx (Fmt.strf "blob %d\000" len)
-      | `D -> Digestif.SHA1.feed_string ctx (Fmt.strf "tag %d\000" len) in
-    let ctx = Digestif.SHA1.feed_bigstring ctx ~off ~len buf in
-    Digestif.SHA1.(Uid.of_hex (to_hex (get ctx)))
-
-  let transmit_of_filename filename =
-    let filename = Fpath.to_string filename in
-    let ic = open_in filename in
-    let rs = Bytes.create De.io_buffer_size in
-    let go ~brk =
-      seek_in ic (Int64.to_int brk) ;
-      let len = input ic rs 0 (Bytes.length rs) in
-      Lwt.return (rs, 0, len) in
-    go
-
-  let ( >>? ) x f =
-    let open Lwt.Infix in
-    x >>= function Ok x -> f x | Error _ as err -> Lwt.return err
-
-  let run ~light_load ~heavy_load stream filename =
-    let open Lwt.Infix in
-    ( Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun _tmp ->
-      let tmp = Fpath.v "tmp.pack" in
-      Log.debug (fun m ->
-          m "Start to verify incoming PACK file (%a)." Fpath.pp tmp) ;
-      Lwt.catch
-        (fun () -> Thin.verify ~digest tmp fs stream)
-        (fun exn ->
-           Log.err (fun m -> m "Got an error: %s." (Printexc.to_string exn)) ;
-           Printexc.print_backtrace stdout ;
-           Lwt.return_error (`Msg (Printexc.to_string exn))) >>? function
-      | (_, [], weight) ->
-        Log.debug (fun m -> m "Given PACK file is not thin.") ;
-        Bos.OS.Path.move tmp filename |> Lwt.return >>? fun () ->
-        Lwt.return_ok weight
-      | (n, uids, weight) ->
-        Log.debug (fun m -> m "Income PACK file: %Ld byte(s)." weight) ;
-        Thin.canonicalize ~light_load ~heavy_load
-          ~transmit:(transmit_of_filename tmp) filename fs n uids weight )
-    >>= function
-    | Ok weight ->
-        Log.debug (fun m ->
-            m "Store %Ld byte(s) into %a." weight Fpath.pp filename) ;
-        Lwt.return_unit
-    | Error err -> failwithf "%a" Rresult.R.pp_msg err
+  let delete fpath =
+    Lwt_unix.unlink (Fpath.to_string fpath) >>= fun () ->
+    Lwt.return_ok ()
 end
 
-module Tuyau = struct
-  type t = Conduit_lwt.flow
-
-  type +'a fiber = 'a Lwt.t
-
-  include Conduit_lwt
-end
-
-module Fetch = Nss.Fetch.Make (Scheduler) (struct include Lwt let yield = pause end) (Tuyau) (Uid) (Ref)
-
-let connect ~capabilities path ~resolvers ?want domain_name store access
-    fetch_cfg pack =
-  let open Lwt.Infix in
-  Log.debug (fun m -> m "Try to connect to <%a>." Domain_name.pp domain_name) ;
-  Conduit_lwt_unix.flow resolvers domain_name >>= function
-  | Error err ->
-      Log.err (fun m -> m "<%a> unavailable." Domain_name.pp domain_name) ;
-      failwithf "%a" Conduit_lwt_unix.pp_error err
-  | Ok flow -> (
-      Log.info (fun m ->
-          m "Connected to <%a%s>." Domain_name.pp domain_name path) ;
-      Fetch.fetch_v1 ~capabilities ?want ~host:domain_name path flow store
-        access fetch_cfg (fun (payload, off, len) ->
-            let v = String.sub payload off len in
-            pack (Some (v, 0, len)))
-      >>= fun () ->
-      Log.debug (fun m -> m "PACK file downloaded!") ;
-      pack None ;
-      (* End of pack! *)
-      Conduit_lwt.close flow >>= function
-      | Ok () -> Lwt.return_unit
-      | Error err -> failwithf "%a" Conduit_lwt.pp_error err)
+module Git = Git.Make (Scheduler) (Append) (Uid) (Ref)
 
 let resolvers =
   Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
     (Conduit_lwt_unix_tcp.resolv_conf ~port:9418)
     Conduit.empty
 
-let fetch uri ?(version = `V1) ?(capabilities = []) want path filename =
+let ( >>? ) = Lwt_result.bind
+
+let fpathf fmt = Fmt.kstrf Fpath.v fmt
+
+let fetch uri ?(version = `V1) ?(capabilities = []) want path =
   let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
   let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
   let access = access lwt path in
   let store = store_inj (Hashtbl.create 0x100) in
-  match (version, Uri.scheme uri, Uri.host uri, Uri.path uri) with
-  | `V1, Some "git", Some domain_name, path ->
-      let fetch_cfg = Nss.Fetch.configuration capabilities in
-      let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
-      let fiber =
-        let open Lwt.Infix in
-        let stream, pack = Lwt_stream.create () in
-        Lwt.catch
-          (fun () ->
-            Lwt.join
-              [
-                connect ~capabilities path ~resolvers ~want domain_name store
-                  access fetch_cfg pack;
-                Crt.run ~light_load ~heavy_load
-                  (fun () -> Lwt_stream.get stream)
-                  filename;
-              ]
-            >>= Lwt.return_ok)
-          (function
-            | Failure err -> Lwt.return_error (R.msgf "%s" err)
-            | exn ->
-                Printexc.print_backtrace stderr ;
-                Log.err (fun m ->
-                    m "Got an unexpected error: %s" (Printexc.to_string exn)) ;
-                Lwt.return_error (R.msgf "%s" (Printexc.to_string exn))) in
-      Log.debug (fun m -> m "Launch the lwt fiber.") ;
-      Lwt_main.run fiber
-  | _ -> R.error_msgf "Invalid uri: %a" Uri.pp uri
+  Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp0 ->
+  Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp1 ->
+  Bos.OS.File.tmp "pack-%s.idx"  |> Lwt.return >>? fun tmp2 ->
+  Git.fetch ~resolvers
+    (access, light_load, heavy_load) store uri ~version ~capabilities want
+    ~src:tmp0 ~dst:tmp1 ~idx:tmp2 >>? fun (uid, _refs) ->
+  let pck = fpathf "pack-%a.pack" Uid.pp uid in
+  let idx = fpathf "pack-%a.idx"  Uid.pp uid in
+  Bos.OS.Path.move tmp1 pck |> Lwt.return >>? fun () ->
+  Bos.OS.Path.move tmp2 idx |> Lwt.return >>? fun () ->
+  Lwt.return_ok ()
 
 let fetch all thin _depth no_done no_progress level style_renderer repository
-    want path filename =
+    want path =
   let capabilities =
     let ( $ ) x f = f x in
     [ `Multi_ack; `Multi_ack_detailed; `Side_band; `Side_band_64k; `Ofs_delta ]
@@ -198,7 +99,7 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
     | true, _ -> `All
     | false, _ :: _ -> `Some want
     | false, [] -> `All in
-  fetch repository ~capabilities want path filename
+  fetch repository ~capabilities want path
 
 open Cmdliner
 
@@ -305,6 +206,5 @@ let fetch =
       $ renderer
       $ repository
       $ references
-      $ local
-      $ output),
+      $ local),
     Term.info "fetch" ~doc ~exits ~man )

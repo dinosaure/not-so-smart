@@ -1,50 +1,5 @@
 open Sigs
 
-module type IO = sig
-  type +'a t
-
-  val bind : 'a t -> ('a -> 'b t) -> 'b t
-
-  val return : 'a -> 'a t
-
-  val fail : exn -> 'a t
-
-  val yield : unit -> unit t
-end
-
-module type UID = sig
-  type t
-
-  val of_hex : string -> t
-
-  val to_hex : t -> string
-
-  val compare : t -> t -> int
-end
-
-module type REF = sig
-  type t
-
-  val v : string -> t
-
-  val equal : t -> t -> bool
-end
-
-module type FLOW = sig
-  type +'a fiber
-
-  type t
-
-  type error
-
-  val recv :
-    t -> Cstruct.t -> ([ `End_of_input | `Input of int ], error) result fiber
-
-  val send : t -> Cstruct.t -> (int, error) result fiber
-
-  val pp_error : error Fmt.t
-end
-
 type configuration = Neg.configuration
 
 let multi_ack capabilities =
@@ -99,17 +54,18 @@ struct
 
   let references want have =
     match want with
-    | `None -> []
+    | `None -> [], []
     | `All ->
         List.fold_left
-          (fun acc -> function uid, _, false -> uid :: acc | _ -> acc)
+          (fun acc -> function uid, ref, false -> (uid, ref) :: acc | _ -> acc)
           [] have
+        |> List.split
     | `Some refs ->
-        let fold acc (uid, refname, peeled) =
-          if List.exists Ref.(equal refname) refs && not peeled
-          then uid :: acc
+        let fold acc (uid, ref, peeled) =
+          if List.exists Ref.(equal ref) refs && not peeled
+          then (uid, ref) :: acc
           else acc in
-        List.fold_left fold [] have
+        List.fold_left fold [] have |> List.split
 
   let fetch_v1 ~capabilities ?want:(refs = `None) ~host path flow store access
       fetch_cfg pack =
@@ -120,9 +76,9 @@ struct
       in
       let* v = recv ctx advertised_refs in
       let v = Smart.Advertised_refs.map ~fuid:Uid.of_hex ~fref:Ref.v v in
-      let uids = references refs (Smart.Advertised_refs.refs v) in
+      let uids, refs = references refs (Smart.Advertised_refs.refs v) in
       update ctx (Smart.Advertised_refs.capabilities v) ;
-      return uids in
+      return (uids, refs) in
     let pack ctx =
       let open Smart in
       let side_band =
@@ -133,7 +89,7 @@ struct
     let ctx = Smart.make capabilities in
     let negotiator = Neg.negotiator ~compare:Uid.compare in
     Neg.tips sched access store negotiator |> prj >>= fun () ->
-    Neg.run sched fail io flow (prelude ctx) |> prj >>= fun uids ->
+    Neg.run sched fail io flow (prelude ctx) |> prj >>= fun (uids, refs) ->
     let hex = { Neg.to_hex = Uid.to_hex; Neg.of_hex = Uid.of_hex } in
     Neg.find_common sched io flow fetch_cfg hex access store negotiator ctx uids
     |> prj
@@ -142,8 +98,8 @@ struct
     let rec go () =
       Neg.run sched fail io flow (pack ctx) |> prj >>= fun continue ->
       if continue
-      then IO.yield () >>= go
+      then go ()
       else return () in
     Log.debug (fun m -> m "Start to download PACK file.") ;
-    go ()
+    go () >>= fun () -> return refs
 end
