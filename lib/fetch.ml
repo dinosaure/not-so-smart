@@ -54,7 +54,7 @@ struct
 
   let references want have =
     match want with
-    | `None -> [], []
+    | `None -> ([], [])
     | `All ->
         List.fold_left
           (fun acc -> function uid, ref, false -> (uid, ref) :: acc | _ -> acc)
@@ -97,9 +97,7 @@ struct
     if res < 0 then Log.warn (fun m -> m "No common commits") ;
     let rec go () =
       Neg.run sched fail io flow (pack ctx) |> prj >>= fun continue ->
-      if continue
-      then go ()
-      else return () in
+      if continue then go () else return () in
     Log.debug (fun m -> m "Start to download PACK file.") ;
     go () >>= fun () -> return refs
 end

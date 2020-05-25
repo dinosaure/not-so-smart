@@ -9,7 +9,7 @@ let decoder_from x =
   let buffer = Bytes.of_string x in
   { buffer; pos = 0; max }
 
-let pp ppf { buffer; pos; max; } =
+let pp ppf { buffer; pos; max } =
   Hxd_string.pp Hxd.O.default ppf (Bytes.sub_string buffer pos (max - pos))
 
 type error =
@@ -155,7 +155,8 @@ let at_least_one_pkt decoder =
 
 let get_pkt_len decoder =
   let len = decoder.max - decoder.pos in
-  if len >= 4 then
+  if len >= 4
+  then
     let pkt_len = to_int ~base:16 ~off:decoder.pos ~len:4 decoder.buffer in
     Some pkt_len
   else None
@@ -192,24 +193,26 @@ let get_pkt_len decoder =
    the protocol error to another layer (eg. [carton] when it received finally a
    __not-full__ PACK file). The goal is to be more resilient at this layer. *)
 
-let error_end_of_input decoder () =
-  fail decoder `End_of_input
+let error_end_of_input decoder () = fail decoder `End_of_input
 
 let reliable_pkt k decoder () =
   match get_pkt_len decoder with
   | Some _len ->
-    let hdr = Fmt.strf "%04X" (decoder.max - decoder.pos) in
-    Bytes.blit_string hdr 0 decoder.buffer decoder.pos 4 ; (* unsafe! *)
-    k decoder
+      let hdr = Fmt.strf "%04X" (decoder.max - decoder.pos) in
+      Bytes.blit_string hdr 0 decoder.buffer decoder.pos 4 ;
+      (* unsafe! *)
+      k decoder
   | None ->
-    Bytes.blit_string "0000" 0 decoder.buffer decoder.pos 4 ;
-    decoder.max <- decoder.pos + 4 ;
-    k decoder
+      Bytes.blit_string "0000" 0 decoder.buffer decoder.pos 4 ;
+      decoder.max <- decoder.pos + 4 ;
+      k decoder
 
 let prompt :
-    ?strict:bool -> (decoder -> ('v, ([> error ] as 'err)) state) -> decoder -> ('v, 'err) state
-    =
- fun ?(strict= true) k decoder ->
+    ?strict:bool ->
+    (decoder -> ('v, ([> error ] as 'err)) state) ->
+    decoder ->
+    ('v, 'err) state =
+ fun ?(strict = true) k decoder ->
   if decoder.pos > 0
   then (
     (* XXX(dinosaure): compress *)
@@ -219,14 +222,15 @@ let prompt :
     decoder.pos <- 0) ;
   let rec go off =
     if off = Bytes.length decoder.buffer
-    && decoder.pos > 0
-    && not (at_least_one_pkt { decoder with max = off })
+       && decoder.pos > 0
+       && not (at_least_one_pkt { decoder with max = off })
     then
-      Error {
+      Error
+        {
           error = `No_enough_space;
           buffer = decoder.buffer;
           committed = decoder.pos;
-      }
+        }
     else if not (at_least_one_pkt { decoder with max = off })
             (* XXX(dinosaure): we make a new decoder here and we did __not__ set
                [decoder.max] owned by end-user, and this is exactly what we want. *)
@@ -235,11 +239,14 @@ let prompt :
         {
           buffer = decoder.buffer;
           off;
-          len= (Bytes.length decoder.buffer) - off;
+          len = Bytes.length decoder.buffer - off;
           continue = (fun len -> go (off + len));
-          eof = if strict
-                then error_end_of_input decoder (* fail *)
-                else ( decoder.max <- off ; reliable_pkt k decoder )
+          eof =
+            (if strict
+            then error_end_of_input decoder (* fail *)
+            else (
+              decoder.max <- off ;
+              reliable_pkt k decoder));
         }
     else (
       decoder.max <- off ;

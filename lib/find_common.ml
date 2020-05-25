@@ -31,20 +31,20 @@ let run :
   let tmp = Cstruct.create io_buffer_size in
   let failwithf fmt = Format.kasprintf (fun err -> raise (Failure err)) fmt in
   let rec go = function
-    | Smart.Read { k; buffer; off; len; eof; } -> (
+    | Smart.Read { k; buffer; off; len; eof } -> (
         let max = min (Cstruct.len tmp) len in
         Log.debug (fun m -> m "Start to read %d byte(s)." max) ;
         recv flow (Cstruct.sub tmp 0 max) >>= function
         | Ok `End_of_input ->
-          Log.debug (fun m -> m "Got end of input.") ;
-          go (eof ())
+            Log.debug (fun m -> m "Got end of input.") ;
+            go (eof ())
         | Ok (`Input len) ->
-          Log.debug (fun m -> m "Got %d/%d byte(s)." len max) ;
-          Cstruct.blit_to_bytes tmp 0 buffer off len ;
-          go (k len)
+            Log.debug (fun m -> m "Got %d/%d byte(s)." len max) ;
+            Cstruct.blit_to_bytes tmp 0 buffer off len ;
+            go (k len)
         | Error err ->
-          Log.err (fun m -> m "Got an error: %a." pp_error err) ;
-          failwithf "%a" pp_error err)
+            Log.err (fun m -> m "Got an error: %a." pp_error err) ;
+            failwithf "%a" pp_error err)
     | Smart.Write { k; buffer; off; len } ->
         let rec loop tmp =
           if Cstruct.len tmp = 0
@@ -57,8 +57,8 @@ let run :
         loop (Cstruct.of_string buffer ~off ~len)
     | Smart.Return v -> return v
     | Smart.Error (`Protocol err) ->
-      Log.err (fun m -> m "Got a protocol error: %a." Smart.pp_error err) ;
-      failwithf "%a" Smart.pp_error err in
+        Log.err (fun m -> m "Got a protocol error: %a." Smart.pp_error err) ;
+        failwithf "%a" Smart.pp_error err in
   go fiber
 
 (* XXX(dinosaure): this part is really **ugly**! But we must follow the same
@@ -216,8 +216,7 @@ let find_common ({ bind; return } as scheduler) io flow
             else go negotiator in
       go negotiator >>= fun () ->
       (if (not !got_ready) || not no_done
-      then (
-        run scheduler raise io flow Smart.(send ctx negotiation_done ()))
+      then run scheduler raise io flow Smart.(send ctx negotiation_done ())
       else return ())
       >>= fun () ->
       if !retval <> 0
@@ -225,10 +224,10 @@ let find_common ({ bind; return } as scheduler) io flow
         cfg.multi_ack <- `None ;
         incr flushes) ;
       (if (not !got_ready) || not no_done
-      then
-        ( Log.debug (fun m -> m "Negotiation is done!" )
-        ; run scheduler raise io flow Smart.(recv ctx shallows)
-        >>= fun _shallows -> return () )
+      then (
+        Log.debug (fun m -> m "Negotiation is done!") ;
+        run scheduler raise io flow Smart.(recv ctx shallows)
+        >>= fun _shallows -> return ())
       else return ())
       >>= fun () ->
       let rec go () =

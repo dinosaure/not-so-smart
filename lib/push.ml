@@ -1,8 +1,7 @@
 open Rresult
 open Sigs
 
-type configuration =
-  { stateless : bool }
+type configuration = { stateless : bool }
 
 let configuration ?(stateless = true) () = { stateless }
 

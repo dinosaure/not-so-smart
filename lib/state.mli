@@ -1,5 +1,11 @@
 type ('a, 'err) t =
-  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t; eof : unit -> ('a, 'err) t }
+  | Read   of {
+      buffer : bytes;
+      off : int;
+      len : int;
+      k : int -> ('a, 'err) t;
+      eof : unit -> ('a, 'err) t;
+    }
   | Write  of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
   | Return of 'a
   | Error  of 'err

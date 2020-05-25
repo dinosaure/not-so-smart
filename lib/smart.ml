@@ -65,8 +65,8 @@ module Value = struct
    fun decoder w ->
     let rec go = function
       | Decoder.Done v -> State.Return v
-      | Decoder.Read { buffer; off; len; continue; eof;  } ->
-        State.Read { k = go <.> continue; buffer; off; len; eof= go <.> eof; }
+      | Decoder.Read { buffer; off; len; continue; eof } ->
+          State.Read { k = go <.> continue; buffer; off; len; eof = go <.> eof }
       | Decoder.Error { error; _ } -> State.Error error in
     match w with
     | Advertised_refs -> go (Protocol.Decoder.decode_advertised_refs decoder)
@@ -81,7 +81,13 @@ module Value = struct
 end
 
 type ('a, 'err) t = ('a, 'err) State.t =
-  | Read   of { buffer : bytes; off : int; len : int; k : int -> ('a, 'err) t; eof : unit -> ('a, 'err) t }
+  | Read   of {
+      buffer : bytes;
+      off : int;
+      len : int;
+      k : int -> ('a, 'err) t;
+      eof : unit -> ('a, 'err) t;
+    }
   | Write  of { buffer : string; off : int; len : int; k : int -> ('a, 'err) t }
   | Return of 'a
   | Error  of 'err

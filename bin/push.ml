@@ -8,7 +8,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-let ( <.> ) f g = fun x -> f (g x)
+let ( <.> ) f g x = f (g x)
 
 module Git = Git.Make (Scheduler) (Append) (Uid) (Ref)
 
@@ -28,8 +28,9 @@ let push uri ?(version = `V1) ?(capabilities = []) cmds path =
   let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
   let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
   let store = store_inj (Hashtbl.create 0x100) in
-  Git.push ~resolvers (access, light_load, heavy_load) store uri ~version ~capabilities
-    cmds
+  Git.push ~resolvers
+    (access, light_load, heavy_load)
+    store uri ~version ~capabilities cmds
 
 let push level style_renderer repository cmds path =
   let capabilities =

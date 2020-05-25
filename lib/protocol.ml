@@ -258,7 +258,7 @@ module Decoder = struct
 
   let is_new_line = function '\n' -> true | _ -> false
 
-  let peek_pkt ?(trim= true) decoder =
+  let peek_pkt ?(trim = true) decoder =
     let buf, off, len = peek_pkt decoder in
     let buf = Bytes.to_string buf in
     let res = String.Sub.v buf ~start:off ~stop:(off + len) in

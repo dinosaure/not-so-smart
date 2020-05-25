@@ -28,15 +28,15 @@ let fetch uri ?(version = `V1) ?(capabilities = []) want path =
   let store = store_inj (Hashtbl.create 0x100) in
   Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp0 ->
   Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp1 ->
-  Bos.OS.File.tmp "pack-%s.idx"  |> Lwt.return >>? fun tmp2 ->
+  Bos.OS.File.tmp "pack-%s.idx" |> Lwt.return >>? fun tmp2 ->
   Git.fetch ~resolvers
-    (access, light_load, heavy_load) store uri ~version ~capabilities want
-    ~src:tmp0 ~dst:tmp1 ~idx:tmp2 >>? fun (uid, _refs) ->
+    (access, light_load, heavy_load)
+    store uri ~version ~capabilities want ~src:tmp0 ~dst:tmp1 ~idx:tmp2
+  >>? fun (uid, _refs) ->
   let pck = fpathf "pack-%a.pack" Uid.pp uid in
-  let idx = fpathf "pack-%a.idx"  Uid.pp uid in
+  let idx = fpathf "pack-%a.idx" Uid.pp uid in
   Bos.OS.Path.move tmp1 pck |> Lwt.return >>? fun () ->
-  Bos.OS.Path.move tmp2 idx |> Lwt.return >>? fun () ->
-  Lwt.return_ok ()
+  Bos.OS.Path.move tmp2 idx |> Lwt.return >>? fun () -> Lwt.return_ok ()
 
 let fetch all thin _depth no_done no_progress level style_renderer repository
     want path =
