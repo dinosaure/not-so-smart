@@ -231,7 +231,6 @@ struct
         let stream, pusher = Lwt_stream.create () in
         let stream () = Lwt_stream.get stream in
         let run () =
-          Fmt.epr ">>> START TO RUN FIBER.\n%!" ;
           Lwt.both
             (fetch_v1 ~capabilities path ~resolvers ~want domain_name store
                access fetch_cfg pusher)
