@@ -10,7 +10,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-module Git = Git.Make (Scheduler) (Append) (Uid) (Ref)
+module G = Git.Make (Scheduler) (Append) (Uid) (Ref)
 
 let resolvers =
   Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
@@ -21,7 +21,7 @@ let ( >>? ) = Lwt_result.bind
 
 let fpathf fmt = Fmt.kstrf Fpath.v fmt
 
-let fetch uri ?(version = `V1) ?(capabilities = []) want path =
+let fetch edn ?(version = `V1) ?(capabilities = []) want path =
   let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
   let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
   let access = access lwt path in
@@ -29,9 +29,9 @@ let fetch uri ?(version = `V1) ?(capabilities = []) want path =
   Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp0 ->
   Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp1 ->
   Bos.OS.File.tmp "pack-%s.idx" |> Lwt.return >>? fun tmp2 ->
-  Git.fetch ~resolvers
+  G.fetch ~resolvers
     (access, light_load, heavy_load)
-    store uri ~version ~capabilities want ~src:tmp0 ~dst:tmp1 ~idx:tmp2
+    store edn ~version ~capabilities want ~src:tmp0 ~dst:tmp1 ~idx:tmp2
   >>? fun (uid, _refs) ->
   let pck = fpathf "pack-%a.pack" Uid.pp uid in
   let idx = fpathf "pack-%a.idx" Uid.pp uid in
@@ -63,9 +63,9 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
 
 open Cmdliner
 
-let uri =
-  let parser = R.ok <.> Uri.of_string in
-  let pp = Uri.pp in
+let edn =
+  let parser = Git.endpoint_of_string in
+  let pp = Git.pp_endpoint in
   Arg.conv (parser, pp)
 
 let reference =
@@ -88,7 +88,7 @@ let filename =
 
 let repository =
   let doc = "The URL to the remote repository." in
-  Arg.(required & pos 0 (some uri) None & info [] ~docv:"<repository>" ~doc)
+  Arg.(required & pos 0 (some edn) None & info [] ~docv:"<repository>" ~doc)
 
 let references =
   let doc =

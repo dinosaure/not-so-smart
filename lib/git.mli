@@ -28,6 +28,11 @@ module type UID = sig
   val hash : t -> int
 end
 
+type endpoint
+
+val pp_endpoint : endpoint Fmt.t
+val endpoint_of_string : string -> (endpoint, [> `Msg of string ]) result
+
 module Make
     (Scheduler : Sigs.SCHED with type +'a s = 'a Lwt.t)
     (Append : APPEND with type +'a fiber = 'a Lwt.t)
@@ -39,7 +44,7 @@ module Make
     * Uid.t Carton_lwt.Thin.light_load
     * Uid.t Carton_lwt.Thin.heavy_load ->
     (Uid.t, Uid.t * int ref * int64, 'g) Sigs.store ->
-    Uri.t ->
+    endpoint ->
     ?version:[> `V1 ] ->
     ?capabilities:Smart.Capability.t list ->
     [ `All | `Some of Ref.t list | `None ] ->
@@ -58,7 +63,7 @@ module Make
     * Uid.t Carton_lwt.Thin.light_load
     * Uid.t Carton_lwt.Thin.heavy_load ->
     (Uid.t, Uid.t Pck.t, 'g) Sigs.store ->
-    Uri.t ->
+    endpoint ->
     ?version:[> `V1 ] ->
     ?capabilities:Smart.Capability.t list ->
     [ `Create of Ref.t | `Delete of Ref.t | `Update of Ref.t * Ref.t ] list ->

@@ -10,7 +10,7 @@ let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
 let ( <.> ) f g x = f (g x)
 
-module Git = Git.Make (Scheduler) (Append) (Uid) (Ref)
+module G = Git.Make (Scheduler) (Append) (Uid) (Ref)
 
 let resolvers =
   Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
@@ -28,7 +28,7 @@ let push uri ?(version = `V1) ?(capabilities = []) cmds path =
   let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
   let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
   let store = store_inj (Hashtbl.create 0x100) in
-  Git.push ~resolvers
+  G.push ~resolvers
     (access, light_load, heavy_load)
     store uri ~version ~capabilities cmds
 
@@ -43,9 +43,9 @@ let push level style_renderer repository cmds path =
 
 open Cmdliner
 
-let uri =
-  let parser = R.ok <.> Uri.of_string in
-  let pp = Uri.pp in
+let edn =
+  let parser = Git.endpoint_of_string in
+  let pp = Git.pp_endpoint in
   Arg.conv (parser, pp)
 
 let command =
@@ -74,7 +74,7 @@ let directory =
 
 let repository =
   let doc = "The URL to the remote repository." in
-  Arg.(required & pos 0 (some uri) None & info [] ~docv:"<repository>" ~doc)
+  Arg.(required & pos 0 (some edn) None & info [] ~docv:"<repository>" ~doc)
 
 let local =
   let env = Arg.env_var "PUSH_DIR" in

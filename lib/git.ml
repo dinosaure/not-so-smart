@@ -38,6 +38,58 @@ end
 
 let ( <.> ) f g x = f (g x)
 
+type endpoint =
+  { scheme : [ `SSH of string | `Git | `HTTP | `HTTPS ]
+  ; path : string
+  ; domain_name : [ `host ] Domain_name.t }
+
+let pp_endpoint ppf edn = match edn with
+  | { scheme= `SSH user; path; domain_name; } ->
+    Fmt.pf ppf "%s@%a:%s" user Domain_name.pp domain_name path
+  | { scheme= `Git; path; domain_name; } ->
+    Fmt.pf ppf "git://%a/%s" Domain_name.pp domain_name path
+  | { scheme= `HTTP; path; domain_name; } ->
+    Fmt.pf ppf "http://%a/%s" Domain_name.pp domain_name path
+  | { scheme= `HTTPS; path; domain_name; } ->
+    Fmt.pf ppf "https://%a/%s" Domain_name.pp domain_name path
+
+let endpoint_of_string str =
+  let open Rresult in
+  let parse_ssh x =
+    let max = String.length x in
+    Emile.of_string_raw ~off:0 ~len:max x
+    |> R.reword_error (R.msgf "%a" Emile.pp_error)
+    >>= fun (consumed, m) ->
+    match Astring.String.cut ~sep:":" (String.sub x consumed (max - consumed)) with
+    | Some ("", path) ->
+      let user = String.concat "." (List.map (function `Atom x -> x | `String x -> Fmt.strf "%S" x) m.Emile.local) in
+      ( match fst m.Emile.domain with
+        | `Domain vs -> Domain_name.of_strings vs >>= Domain_name.host
+        | `Literal v -> Domain_name.of_string v >>= Domain_name.host
+        | `Addr _ -> R.error_msg "domain part must be a domain" ) >>= fun domain_name ->
+      R.ok { scheme= `SSH user; path; domain_name }
+    | _ -> R.error_msg "invalid pattern" in
+  let parse_uri x =
+    let uri = Uri.of_string x in
+    match Uri.scheme uri, Uri.host uri, Uri.path uri with
+    | Some "git", Some domain_name, path ->
+      Domain_name.of_string domain_name >>=
+      Domain_name.host >>= fun domain_name ->
+      R.ok { scheme= `Git; path; domain_name; }
+    | Some "http", Some domain_name, path ->
+      Domain_name.of_string domain_name >>=
+      Domain_name.host >>= fun domain_name ->
+      R.ok { scheme= `HTTP; path; domain_name; }
+    | Some "https", Some domain_name, path ->
+      Domain_name.of_string domain_name >>=
+      Domain_name.host >>= fun domain_name ->
+      R.ok { scheme= `HTTPS; domain_name; path; }
+    | _ -> R.error_msgf "invalid uri: %a" Uri.pp uri in
+  match parse_ssh str, parse_uri str with
+  | Ok edn, _ -> R.ok edn
+  | Error _, Ok edn -> R.ok edn
+  | Error _, Error _ -> R.error_msgf "Invalid endpoint: %s" str
+
 module Make
     (Scheduler : Sigs.SCHED with type +'a s = 'a Lwt.t)
     (Append : APPEND with type +'a fiber = 'a Lwt.t)
@@ -220,14 +272,15 @@ struct
     pack None ;
     Conduit_lwt.close flow >>? fun () -> Lwt.return_ok refs
 
-  let fetch ~resolvers (access, light_load, heavy_load) store uri
+  let fetch ~resolvers (access, light_load, heavy_load) store edn
       ?(version = `V1) ?(capabilities = []) want ~src ~dst ~idx =
     let open Rresult in
     let open Lwt.Infix in
-    match (version, Uri.scheme uri, Uri.host uri, Uri.path uri) with
-    | `V1, Some "git", Some domain_name, path ->
+    match version, edn.scheme with
+    | `V1, `Git ->
+        let domain_name = edn.domain_name in
+        let path = edn.path in
         let fetch_cfg = Nss.Fetch.configuration capabilities in
-        let domain_name = Domain_name.(host_exn (of_string_exn domain_name)) in
         let stream, pusher = Lwt_stream.create () in
         let stream () = Lwt_stream.get stream in
         let run () =
@@ -243,7 +296,7 @@ struct
         Lwt.catch run (function
           | Failure err -> Lwt.return_error (R.msg err)
           | exn -> Lwt.return_error (`Exn exn))
-    | _ -> Lwt.return_error (R.msgf "Invalid uri: %a" Uri.pp uri)
+    | _ -> assert false
 
   module Delta = Carton_lwt.Enc.Delta (Uid) (Verbose)
 
@@ -335,19 +388,20 @@ struct
       push_cfg pack
     >>= fun () -> Conduit_lwt.close flow
 
-  let push ~resolvers (access, light_load, heavy_load) store uri
+  let push ~resolvers (access, light_load, heavy_load) store edn
       ?(version = `V1) ?(capabilities = []) cmds =
     let open Rresult in
-    match (version, Uri.scheme uri, Uri.host uri, Uri.path uri) with
-    | `V1, Some "git", Some domain_name, path ->
-        let push_cfg = Nss.Push.configuration () in
-        let domain_name = Domain_name.(host_exn <.> of_string_exn) domain_name in
-        let run () =
-          push ~resolvers ~capabilities path cmds domain_name store access
-            push_cfg
-            (pack ~light_load ~heavy_load) in
-        Lwt.catch run (function
-          | Failure err -> Lwt.return_error (R.msgf "%s" err)
-          | exn -> Lwt.return_error (`Exn exn))
-    | _ -> Lwt.return_error (R.msgf "Invalid uri: %a" Uri.pp uri)
+    match version, edn.scheme with
+    | `V1, `Git ->
+      let domain_name = edn.domain_name in
+      let path = edn.path in
+      let push_cfg = Nss.Push.configuration () in
+      let run () =
+        push ~resolvers ~capabilities path cmds domain_name store access
+          push_cfg
+          (pack ~light_load ~heavy_load) in
+      Lwt.catch run (function
+        | Failure err -> Lwt.return_error (R.msgf "%s" err)
+        | exn -> Lwt.return_error (`Exn exn))
+    | _ -> assert false
 end

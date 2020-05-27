@@ -78,9 +78,9 @@ struct
         Log.debug (fun m ->
             m "Prepare a pack of %d object(s)." (List.length uids)) ;
         let stream = pack uids in
-        let pack =
-          Smart.send_pack ~stateless:push_cfg.stateless false
-          (* side-band *) in
+        let side_band =
+          Smart.shared `Side_band ctx || Smart.shared `Side_band_64k ctx in
+        let pack = Smart.send_pack ~stateless:push_cfg.stateless side_band in
         let rec go () =
           stream () >>= function
           | None ->

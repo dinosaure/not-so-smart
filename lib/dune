@@ -32,4 +32,4 @@
  (name git)
  (public_name nss.git)
  (modules git)
- (libraries conduit-lwt uri sigs nss digestif carton-lwt))
+ (libraries emile awa-conduit conduit-lwt conduit-mirage uri sigs nss digestif carton-lwt))
