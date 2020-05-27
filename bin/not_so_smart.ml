@@ -1,5 +1,7 @@
 open Cmdliner
 
+let () = Mirage_crypto_rng_unix.initialize ()
+
 let cmds = [ Fetch.fetch; Push.push ]
 
 let main = `Help (`Pager, None)

@@ -11,6 +11,7 @@ module Make
     (Uid : UID)
     (Ref : REF) : sig
   val fetch_v1 :
+    ?prelude:bool ->
     capabilities:Smart.Capability.t list ->
     ?want:[ `All | `Some of Ref.t list | `None ] ->
     host:[ `host ] Domain_name.t ->

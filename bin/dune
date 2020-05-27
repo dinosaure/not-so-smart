@@ -1,4 +1,7 @@
 (executable
  (name not_so_smart)
- (libraries nss.git conduit-lwt-unix conduit-lwt-unix.tcp bos digestif.c uri
+ (libraries
+   mirage-clock-unix awa-conduit
+   mirage-crypto-rng.unix
+   nss.git conduit-lwt-unix conduit-lwt-unix.tcp bos digestif.c uri
    fmt.tty fmt.cli logs.fmt logs.cli cmdliner))

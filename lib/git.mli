@@ -28,7 +28,10 @@ module type UID = sig
   val hash : t -> int
 end
 
-type endpoint
+type endpoint = private
+  { scheme : [ `SSH of string | `Git | `HTTP | `HTTPS ]
+  ; path : string
+  ; domain_name : [ `host ] Domain_name.t }
 
 val pp_endpoint : endpoint Fmt.t
 val endpoint_of_string : string -> (endpoint, [> `Msg of string ]) result

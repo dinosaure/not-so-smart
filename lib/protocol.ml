@@ -641,7 +641,7 @@ module Encoder = struct
   let encode_want encoder
       { Want.capabilities; wants = first, others; shallows; deepen; filter } =
     let filter encoder =
-      match filter with Some _ -> . | None -> kflush encoder in
+      match filter with Some _ -> . | None -> encode_flush encoder in
 
     let deepen encoder =
       match deepen with

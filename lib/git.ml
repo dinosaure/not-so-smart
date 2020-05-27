@@ -260,11 +260,11 @@ struct
   module Fetch = Nss.Fetch.Make (Scheduler) (Lwt) (Flow) (Uid) (Ref)
   module Push = Nss.Push.Make (Scheduler) (Lwt) (Flow) (Uid) (Ref)
 
-  let fetch_v1 ~capabilities path ~resolvers ?want domain_name store access
+  let fetch_v1 ?prelude ~capabilities path ~resolvers ?want domain_name store access
       fetch_cfg pack =
     let open Lwt.Infix in
     Conduit_lwt.flow resolvers domain_name >>? fun flow ->
-    Fetch.fetch_v1 ~capabilities ?want ~host:domain_name path flow store access
+    Fetch.fetch_v1 ?prelude ~capabilities ?want ~host:domain_name path flow store access
       fetch_cfg (fun (payload, off, len) ->
         let v = String.sub payload off len in
         pack (Some (v, 0, len)))
@@ -277,15 +277,17 @@ struct
     let open Rresult in
     let open Lwt.Infix in
     match version, edn.scheme with
-    | `V1, `Git ->
+    | `V1, (`Git | `SSH _ as scheme) ->
         let domain_name = edn.domain_name in
         let path = edn.path in
         let fetch_cfg = Nss.Fetch.configuration capabilities in
         let stream, pusher = Lwt_stream.create () in
         let stream () = Lwt_stream.get stream in
+        let prelude = match scheme with `Git -> true | `SSH _ -> false in
+        (* XXX(dinosaure): the only tweak needed between git:// and SSH. *)
         let run () =
           Lwt.both
-            (fetch_v1 ~capabilities path ~resolvers ~want domain_name store
+            (fetch_v1 ~prelude ~capabilities path ~resolvers ~want domain_name store
                access fetch_cfg pusher)
             (run ~light_load ~heavy_load stream ~src ~dst ~idx)
           >>= fun (refs, idx) ->

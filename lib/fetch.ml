@@ -67,12 +67,14 @@ struct
           else acc in
         List.fold_left fold [] have |> List.split
 
-  let fetch_v1 ~capabilities ?want:(refs = `None) ~host path flow store access
+  let fetch_v1 ?(prelude= true) ~capabilities ?want:(refs = `None) ~host path flow store access
       fetch_cfg pack =
     let prelude ctx =
       let open Smart in
       let* () =
-        send ctx proto_request (Proto_request.upload_pack ~host ~version:1 path)
+        if prelude
+        then send ctx proto_request (Proto_request.upload_pack ~host ~version:1 path)
+        else return ()
       in
       let* v = recv ctx advertised_refs in
       let v = Smart.Advertised_refs.map ~fuid:Uid.of_hex ~fref:Ref.v v in

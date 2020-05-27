@@ -19,13 +19,7 @@ let map fd ~pos len =
     Mmap.V1.map_file
       (Lwt_unix.unix_file_descr fd)
       ~pos Bigarray.char Bigarray.c_layout false [| len |] in
-  Bigarray.array1_of_genarray res
-
-let map fd ~pos len =
-  let res = ref None in
-  (Lwt_unix.auto_yield 0.0 () >>= fun () ->
-   res := Some (map fd ~pos len) ; Lwt.return_unit ) >>= fun () ->
-  Lwt.return (Option.get !res)
+  Lwt.return (Bigarray.array1_of_genarray res)
 
 let append fd str =
   let rec go off len =
