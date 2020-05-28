@@ -10,7 +10,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-module G = Git.Make (Scheduler) (Append) (Uid) (Ref)
+module G = Git.Make (Scheduler) (Append) (HTTP) (Uid) (Ref)
 
 let ( >>? ) = Lwt_result.bind
 
@@ -49,7 +49,7 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
     authenticator seed want path =
   let capabilities =
     let ( $ ) x f = f x in
-    [ `Multi_ack; `Multi_ack_detailed; `Side_band; `Side_band_64k; `Ofs_delta ]
+    [ `Multi_ack_detailed; `Side_band_64k; `Ofs_delta ]
     $ fun caps ->
     if thin
     then `Thin_pack :: caps

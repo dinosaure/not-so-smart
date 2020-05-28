@@ -145,7 +145,8 @@ module Decoder : sig
     | `Invalid_side_band of string
     | `Invalid_ack of string
     | `Invalid_result of string
-    | `Invalid_command_result of string ]
+    | `Invalid_command_result of string
+    | `Unexpected_flush ]
 
   val pp_error : error Fmt.t
 

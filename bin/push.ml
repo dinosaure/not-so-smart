@@ -10,7 +10,7 @@ let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
 let ( <.> ) f g x = f (g x)
 
-module G = Git.Make (Scheduler) (Append) (Uid) (Ref)
+module G = Git.Make (Scheduler) (Append) (HTTP) (Uid) (Ref)
 
 let resolvers =
   Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint

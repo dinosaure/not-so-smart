@@ -36,6 +36,22 @@ module Verbose = struct
   let print () = Lwt.return_unit
 end
 
+module type HTTP = sig
+  type error
+
+  val pp_error : error Fmt.t
+
+  val get :
+    resolvers:Conduit.resolvers ->
+    ?headers:(string * string) list ->
+    Uri.t -> (unit * string, error) result Lwt.t
+  val post :
+    resolvers:Conduit.resolvers ->
+    ?headers:(string * string) list ->
+    Uri.t -> string ->
+    (unit * string, error) result Lwt.t
+end
+
 let ( <.> ) f g x = f (g x)
 
 type endpoint =
@@ -93,6 +109,7 @@ let endpoint_of_string str =
 module Make
     (Scheduler : Sigs.SCHED with type +'a s = 'a Lwt.t)
     (Append : APPEND with type +'a fiber = 'a Lwt.t)
+    (HTTP : HTTP)
     (Uid : UID)
     (Ref : Sigs.REF) =
 struct
@@ -272,6 +289,57 @@ struct
     pack None ;
     Conduit_lwt.close flow >>? fun () -> Lwt.return_ok refs
 
+  module Flow_http = struct
+    type +'a fiber = 'a Lwt.t
+    type t =
+      { mutable ic  : string
+      ; mutable oc  : string
+      ; mutable pos : int
+      ; resolvers : Conduit.resolvers
+      ; uri : Uri.t }
+    type error = [ `Msg of string ]
+
+    let pp_error = Rresult.R.pp_msg
+
+    let send t raw =
+      let oc = t.oc ^ (Cstruct.to_string raw) in
+      t.oc <- oc ;
+      Lwt.return_ok (Cstruct.len raw)
+
+    let rec recv t raw =
+      if t.pos = String.length t.ic
+      then
+        let open Lwt.Infix in
+        HTTP.post ~resolvers:t.resolvers t.uri t.oc
+        >|= Rresult.(R.reword_error (R.msgf "%a" HTTP.pp_error))
+        >>? fun (_resp, contents) ->
+        t.ic <- t.ic ^ contents ; recv t raw
+      else
+        let len = min (String.length t.ic - t.pos) (Cstruct.len raw) in
+        Cstruct.blit_from_string t.ic t.pos raw 0 len ;
+        t.pos <- t.pos + len ;
+        Lwt.return_ok (`Input len)
+  end
+
+  module Fetch_http = Nss.Fetch.Make (Scheduler) (Lwt) (Flow_http) (Uid) (Ref)
+
+  let http_fetch_v1 ~capabilities uri domain_name path ~resolvers ?want store access
+      fetch_cfg pack =
+    let open Rresult in
+    let open Lwt.Infix in
+    let uri0 = Fmt.strf "%a/info/refs?service=git-upload-pack" Uri.pp uri in
+    let uri0 = Uri.of_string uri0 in
+    HTTP.get ~resolvers uri0 >|= R.reword_error (R.msgf "%a" HTTP.pp_error) >>? fun (_resp, contents) ->
+    let uri1 = Fmt.strf "%a/git-upload-pack" Uri.pp uri in
+    let uri1 = Uri.of_string uri1 in
+    let flow = { Flow_http.ic= contents; pos= 0; oc= ""; resolvers; uri= uri1; } in
+    Fetch_http.fetch_v1 ~prelude:false ~capabilities ?want ~host:domain_name path flow store access
+      fetch_cfg (fun (payload, off, len) ->
+        let v = String.sub payload off len in
+        pack (Some (v, 0, len)))
+    >>= fun refs ->
+    pack None ; Lwt.return_ok refs
+
   let fetch ~resolvers (access, light_load, heavy_load) store edn
       ?(version = `V1) ?(capabilities = []) want ~src ~dst ~idx =
     let open Rresult in
@@ -288,6 +356,30 @@ struct
         let run () =
           Lwt.both
             (fetch_v1 ~prelude ~capabilities path ~resolvers ~want domain_name store
+               access fetch_cfg pusher)
+            (run ~light_load ~heavy_load stream ~src ~dst ~idx)
+          >>= fun (refs, idx) ->
+          match (refs, idx) with
+          | Ok refs, Ok uid -> Lwt.return_ok (uid, refs)
+          | (Error _ as err), _ -> Lwt.return err
+          | Ok _refs, (Error _ as err) -> Lwt.return err in
+        Lwt.catch run (function
+          | Failure err -> Lwt.return_error (R.msg err)
+          | exn -> Lwt.return_error (`Exn exn))
+    | `V1, (`HTTP | `HTTPS as scheme) ->
+        let domain_name = edn.domain_name in
+        let path = edn.path in
+        let fetch_cfg = Nss.Fetch.configuration ~stateless:true capabilities in
+        let stream, pusher = Lwt_stream.create () in
+        let stream () = Lwt_stream.get stream in
+        let uri = match scheme with
+          | `HTTP ->
+            Uri.of_string (Fmt.strf "http://%a%s.git" Domain_name.pp domain_name path)
+          | `HTTPS ->
+            Uri.of_string (Fmt.strf "https://%a%s.git" Domain_name.pp domain_name path) in
+        let run () =
+          Lwt.both
+            (http_fetch_v1 ~capabilities uri domain_name path ~resolvers ~want store
                access fetch_cfg pusher)
             (run ~light_load ~heavy_load stream ~src ~dst ~idx)
           >>= fun (refs, idx) ->

@@ -25,7 +25,7 @@ type configuration = {
   no_done : bool;
 }
 
-type 'uid hex = { to_hex : 'uid -> string; of_hex : string -> 'uid }
+type 'uid hex = { to_hex : 'uid -> string; of_hex : string -> 'uid; compare : 'uid -> 'uid -> int; }
 
 type ('a, 's) raise = exn -> ('a, 's) io
 

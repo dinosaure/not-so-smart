@@ -16,7 +16,7 @@ let no_done = List.exists (( = ) `No_done)
 let configuration ?(stateless = false) capabilities =
   {
     Neg.stateless;
-    Neg.no_done = no_done capabilities;
+    Neg.no_done = if stateless then true else no_done capabilities;
     Neg.multi_ack = multi_ack capabilities;
   }
 
@@ -69,6 +69,11 @@ struct
 
   let fetch_v1 ?(prelude= true) ~capabilities ?want:(refs = `None) ~host path flow store access
       fetch_cfg pack =
+    let capabilities =
+      (* XXX(dinosaure): HTTP ([stateless]) enforces no-done capabilities. Otherwise, you never
+         will receive the PACK file. *)
+      if fetch_cfg.Neg.no_done && not (List.exists (( = ) `No_done) capabilities)
+      then `No_done :: capabilities else capabilities in
     let prelude ctx =
       let open Smart in
       let* () =
@@ -92,7 +97,7 @@ struct
     let negotiator = Neg.negotiator ~compare:Uid.compare in
     Neg.tips sched access store negotiator |> prj >>= fun () ->
     Neg.run sched fail io flow (prelude ctx) |> prj >>= fun (uids, refs) ->
-    let hex = { Neg.to_hex = Uid.to_hex; Neg.of_hex = Uid.of_hex } in
+    let hex = { Neg.to_hex = Uid.to_hex; Neg.of_hex = Uid.of_hex; Neg.compare= Uid.compare; } in
     Neg.find_common sched io flow fetch_cfg hex access store negotiator ctx uids
     |> prj
     >>= fun res ->

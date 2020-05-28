@@ -11,6 +11,7 @@ type nonrec configuration = configuration = {
 type nonrec 'uid hex = 'uid hex = {
   to_hex : 'uid -> string;
   of_hex : string -> 'uid;
+  compare : 'uid -> 'uid -> int;
 }
 
 type 'uid negotiator = 'uid Default.t

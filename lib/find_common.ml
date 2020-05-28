@@ -40,6 +40,7 @@ let run :
             go (eof ())
         | Ok (`Input len) ->
             Log.debug (fun m -> m "Got %d/%d byte(s)." len max) ;
+            Log.debug (fun m -> m "%S" (Cstruct.to_string (Cstruct.sub tmp 0 len))) ;
             Cstruct.blit_to_bytes tmp 0 buffer off len ;
             go (k len)
         | Error err ->
@@ -85,7 +86,7 @@ type configuration = {
   no_done : bool;
 }
 
-type 'uid hex = { to_hex : 'uid -> string; of_hex : string -> 'uid }
+type 'uid hex = { to_hex : 'uid -> string; of_hex : string -> 'uid; compare : 'uid -> 'uid -> int }
 
 let tips { bind; return } { get; deref; locals; _ } store negotiator =
   let ( >>= ) = bind in
@@ -101,7 +102,7 @@ let tips { bind; return } { get; deref; locals; _ } store negotiator =
   locals store >>= go
 
 let find_common ({ bind; return } as scheduler) io flow
-    ({ stateless; no_done; _ } as cfg) { to_hex; of_hex } access store
+    ({ stateless; no_done; _ } as cfg) { to_hex; of_hex; compare; } access store
     negotiator ctx refs =
   let ( >>= ) = bind in
   let ( >>| ) x f = x >>= fun x -> return (f x) in
@@ -115,11 +116,12 @@ let find_common ({ bind; return } as scheduler) io flow
     access.get remote_uid store >>= function
     | Some _ -> return acc
     | None -> return ((remote_uid, ref 0) :: acc) in
-  fold_left_s ~f:fold [] refs >>| List.rev >>= function
+  fold_left_s ~f:fold [] refs >>| List.sort_uniq (fun (a, _) (b, _) -> compare a b) >>= function
   | [] ->
       run scheduler raise io flow Smart.(send ctx flush ()) >>= fun () ->
       return 0
   | uid :: others ->
+    Log.debug (fun m -> m "We want %d commit(s)." (List.length (uid :: others))) ;
       run scheduler raise io flow
         Smart.(
           let uid = (to_hex <.> fst) uid in
@@ -138,12 +140,16 @@ let find_common ({ bind; return } as scheduler) io flow
       let rec go negotiator =
         Default.next scheduler ~parents:access.parents store negotiator
         >>= function
-        | None -> return ()
+        | None ->
+          Log.debug (fun m -> m "Stop the negotiation loop.") ;
+          return ()
         | Some uid ->
+            Log.debug (fun m -> m "[+] have %s." (to_hex uid)) ;
             unsafe_write_have ctx (to_hex uid) ;
             (* completely unsafe! *)
             incr in_vain ;
             incr count ;
+            Log.debug (fun m -> m "count: %d, in-vain: %d, flush-at: %d.\n%!" !count !in_vain !flush_at) ;
             if !flush_at <= !count
             then (
               run scheduler raise io flow Smart.(send ctx flush ())
@@ -151,7 +157,7 @@ let find_common ({ bind; return } as scheduler) io flow
               incr flushes ;
               flush_at := next_flush stateless !count ;
               if (not stateless) && !count = _initial_flush
-              then go negotiator
+              then ( Fmt.epr "NEXT NEGOTIATION.\n%!" ; go negotiator )
               else
                 run scheduler raise io flow Smart.(recv ctx shallows)
                 >>= fun _shallows ->
@@ -160,7 +166,9 @@ let find_common ({ bind; return } as scheduler) io flow
                   >>| Smart.Negotiation.map ~f:of_hex
                   >>= fun ack ->
                   match ack with
-                  | Smart.Negotiation.NAK -> return `Continue
+                  | Smart.Negotiation.NAK ->
+                    Log.debug (fun m -> m "Receive NAK.") ;
+                    return `Continue
                   | Smart.Negotiation.ACK _ ->
                       flushes := 0 ;
                       cfg.multi_ack <- `None ;
@@ -183,6 +191,7 @@ let find_common ({ bind; return } as scheduler) io flow
                           then (
                             (* we need to replay the have for this object on the next RPC request so
                                the peer kows it is in common with us. *)
+                            Log.debug (fun m -> m "[+] have %s." (to_hex uid)) ;
                             unsafe_write_have ctx (to_hex uid) ;
                             (* reset [in_vain] because an ack for this commit has not been seen. *)
                             in_vain := 0 ;
@@ -215,6 +224,7 @@ let find_common ({ bind; return } as scheduler) io flow
                     else go negotiator)
             else go negotiator in
       go negotiator >>= fun () ->
+      Log.debug (fun m -> m "Negotiation (got ready: %b, no-done: %b)." !got_ready no_done) ;
       (if (not !got_ready) || not no_done
       then run scheduler raise io flow Smart.(send ctx negotiation_done ())
       else return ())

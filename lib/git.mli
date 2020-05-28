@@ -28,6 +28,22 @@ module type UID = sig
   val hash : t -> int
 end
 
+module type HTTP = sig
+  type error
+
+  val pp_error : error Fmt.t
+
+  val get :
+    resolvers:Conduit.resolvers ->
+    ?headers:(string * string) list ->
+    Uri.t -> (unit * string, error) result Lwt.t
+  val post :
+    resolvers:Conduit.resolvers ->
+    ?headers:(string * string) list ->
+    Uri.t -> string ->
+    (unit * string, error) result Lwt.t
+end
+
 type endpoint = private
   { scheme : [ `SSH of string | `Git | `HTTP | `HTTPS ]
   ; path : string
@@ -39,6 +55,7 @@ val endpoint_of_string : string -> (endpoint, [> `Msg of string ]) result
 module Make
     (Scheduler : Sigs.SCHED with type +'a s = 'a Lwt.t)
     (Append : APPEND with type +'a fiber = 'a Lwt.t)
+    (HTTP : HTTP)
     (Uid : UID)
     (Ref : Sigs.REF) : sig
   val fetch :

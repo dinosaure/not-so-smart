@@ -1,6 +1,7 @@
 open Cmdliner
 
 let () = Mirage_crypto_rng_unix.initialize ()
+let () = Curl.global_init Curl.CURLINIT_GLOBALALL
 
 let cmds = [ Fetch.fetch; Push.push ]
 

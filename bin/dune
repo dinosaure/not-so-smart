@@ -1,6 +1,7 @@
 (executable
  (name not_so_smart)
  (libraries
+   curl.lwt
    mirage-clock-unix awa-conduit
    mirage-crypto-rng.unix
    nss.git conduit-lwt-unix conduit-lwt-unix.tcp bos digestif.c uri

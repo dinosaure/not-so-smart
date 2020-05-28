@@ -236,7 +236,8 @@ module Decoder = struct
     | `Invalid_side_band of string
     | `Invalid_ack of string
     | `Invalid_result of string
-    | `Invalid_command_result of string ]
+    | `Invalid_command_result of string
+    | `Unexpected_flush ]
 
   let pp_error ppf = function
     | #Decoder.error as err -> Decoder.pp_error ppf err
@@ -250,6 +251,7 @@ module Decoder = struct
     | `Invalid_result raw -> Fmt.pf ppf "Invalid result (%S)" raw
     | `Invalid_command_result raw ->
         Fmt.pf ppf "Invalid result command (%S)" raw
+    | `Unexpected_flush -> Fmt.string ppf "Unexpected flush"
 
   let rec prompt_pkt ?strict k decoder =
     if at_least_one_pkt decoder
@@ -406,7 +408,20 @@ module Decoder = struct
             prompt_pkt (decode_refs ~version) decoder
         | None -> prompt_pkt (decode_refs ~version:1) decoder
       else decode_refs decoder in
-    prompt_pkt decode_version decoder
+
+    (* only for HTTP *)
+    let rec decode_comment decoder =
+      let v = peek_pkt decoder in
+      match String.Sub.head v with
+      | Some '#' ->
+        junk_pkt decoder ;
+        prompt_pkt decode_comment decoder
+      | Some _ -> decode_version decoder
+      | None ->
+        junk_pkt decoder ;
+        decode_version decoder in
+
+    prompt_pkt decode_comment decoder
 
   let decode_result decoder =
     let k decoder =

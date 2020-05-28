@@ -171,7 +171,8 @@ type error =
   | `Invalid_ack of string
   | `Invalid_result of string
   | `Invalid_command_result of string
-  | `No_enough_space ]
+  | `No_enough_space
+  | `Unexpected_flush ]
 
 val pp_error : error Fmt.t
 
