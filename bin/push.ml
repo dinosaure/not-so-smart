@@ -13,21 +13,21 @@ let ( <.> ) f g x = f (g x)
 module G = Git.Make (Scheduler) (Append) (HTTP) (Uid) (Ref)
 
 let resolvers =
-  Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
+  Conduit_lwt.add Conduit_lwt_unix_tcp.protocol
     (Conduit_lwt_unix_tcp.resolv_conf ~port:9418)
     Conduit.empty
 
 let push uri ?(version = `V1) ?(capabilities = []) cmds path =
   let access =
     {
-      Sigs.get = get_object_for_packer lwt path;
+      Sigs.get = get_object_for_packer lwt ;
       Sigs.parents = (fun _uid _store -> assert false);
-      Sigs.deref = deref lwt path;
+      Sigs.deref = deref lwt ;
       Sigs.locals = (fun _store -> assert false);
     } in
   let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
   let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
-  let store = store_inj (Hashtbl.create 0x100) in
+  let store = store_inj ({ path; tbl= Hashtbl.create 0x100; }) in
   G.push ~resolvers
     (access, light_load, heavy_load)
     store uri ~version ~capabilities cmds

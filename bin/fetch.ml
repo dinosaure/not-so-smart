@@ -19,8 +19,8 @@ let fpathf fmt = Fmt.kstrf Fpath.v fmt
 let fetch edn ~resolvers ?(version = `V1) ?(capabilities = []) want path =
   let light_load uid = lightly_load lwt path uid |> Scheduler.prj in
   let heavy_load uid = heavily_load lwt path uid |> Scheduler.prj in
-  let access = access lwt path in
-  let store = store_inj (Hashtbl.create 0x100) in
+  let access = access lwt in
+  let store = store_inj ({ path; tbl= Hashtbl.create 0x100; }) in
   Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp0 ->
   Bos.OS.File.tmp "pack-%s.pack" |> Lwt.return >>? fun tmp1 ->
   Bos.OS.File.tmp "pack-%s.idx" |> Lwt.return >>? fun tmp2 ->
@@ -34,16 +34,13 @@ let fetch edn ~resolvers ?(version = `V1) ?(capabilities = []) want path =
   Bos.OS.Path.move tmp2 idx |> Lwt.return >>? fun () -> Lwt.return_ok ()
 
 let resolvers =
-  Conduit_lwt.register_resolver ~key:Conduit_lwt_unix_tcp.endpoint
+  Conduit_lwt.add Conduit_lwt_unix_tcp.protocol
     (Conduit_lwt_unix_tcp.resolv_conf ~port:9418)
     Conduit.empty
 
 module SSH = Awa_conduit.Make(Lwt)(Conduit_lwt)(Mclock)
 
-let ssh_endpoint, ssh_protocol =
-  SSH.protocol_with_ssh
-    ~key:Conduit_lwt_unix_tcp.endpoint
-    Conduit_lwt_unix_tcp.protocol
+let ssh_protocol = SSH.protocol_with_ssh Conduit_lwt_unix_tcp.protocol
 
 let fetch all thin _depth no_done no_progress level style_renderer repository
     authenticator seed want path =
@@ -75,7 +72,7 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
         Conduit_lwt_unix_tcp.resolv_conf ~port:22 domain_name >>= function
         | Some edn -> Lwt.return (Some (edn, ssh))
         | None -> Lwt.return_none in
-      R.ok (Conduit_lwt.register_resolver ~priority:0 ~key:ssh_endpoint resolve resolvers)
+      R.ok (Conduit_lwt.add ~priority:0 ssh_protocol resolve resolvers)
     | { Git.scheme= `SSH _; _ }, None ->
       R.error_msgf "An ssh fetch requires a seed argument"
     | _ -> R.ok resolvers in

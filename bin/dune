@@ -4,5 +4,6 @@
    curl.lwt
    mirage-clock-unix awa-conduit
    mirage-crypto-rng.unix
-   nss.git conduit-lwt-unix conduit-lwt-unix.tcp bos digestif.c uri
+   digestif digestif.c
+   nss.git conduit-lwt-unix conduit-lwt-unix.tcp bos uri
    fmt.tty fmt.cli logs.fmt logs.cli cmdliner))

@@ -35,7 +35,7 @@ let run :
         let max = min (Cstruct.len tmp) len in
         Log.debug (fun m -> m "Start to read %d byte(s)." max) ;
         recv flow (Cstruct.sub tmp 0 max) >>= function
-        | Ok `End_of_input ->
+        | Ok `End_of_flow ->
             Log.debug (fun m -> m "Got end of input.") ;
             go (eof ())
         | Ok (`Input len) ->

@@ -55,7 +55,7 @@ end
 let ( <.> ) f g x = f (g x)
 
 type endpoint =
-  { scheme : [ `SSH of string | `Git | `HTTP | `HTTPS ]
+  { scheme : [ `SSH of string | `Git | `HTTP of (string * string) list | `HTTPS of (string * string) list ]
   ; path : string
   ; domain_name : [ `host ] Domain_name.t }
 
@@ -64,9 +64,9 @@ let pp_endpoint ppf edn = match edn with
     Fmt.pf ppf "%s@%a:%s" user Domain_name.pp domain_name path
   | { scheme= `Git; path; domain_name; } ->
     Fmt.pf ppf "git://%a/%s" Domain_name.pp domain_name path
-  | { scheme= `HTTP; path; domain_name; } ->
+  | { scheme= `HTTP _; path; domain_name; } ->
     Fmt.pf ppf "http://%a/%s" Domain_name.pp domain_name path
-  | { scheme= `HTTPS; path; domain_name; } ->
+  | { scheme= `HTTPS _; path; domain_name; } ->
     Fmt.pf ppf "https://%a/%s" Domain_name.pp domain_name path
 
 let endpoint_of_string str =
@@ -95,11 +95,11 @@ let endpoint_of_string str =
     | Some "http", Some domain_name, path ->
       Domain_name.of_string domain_name >>=
       Domain_name.host >>= fun domain_name ->
-      R.ok { scheme= `HTTP; path; domain_name; }
+      R.ok { scheme= `HTTP []; path; domain_name; }
     | Some "https", Some domain_name, path ->
       Domain_name.of_string domain_name >>=
       Domain_name.host >>= fun domain_name ->
-      R.ok { scheme= `HTTPS; domain_name; path; }
+      R.ok { scheme= `HTTPS []; domain_name; path; }
     | _ -> R.error_msgf "invalid uri: %a" Uri.pp uri in
   match parse_ssh str, parse_uri str with
   | Ok edn, _ -> R.ok edn
@@ -280,7 +280,7 @@ struct
   let fetch_v1 ?prelude ~capabilities path ~resolvers ?want domain_name store access
       fetch_cfg pack =
     let open Lwt.Infix in
-    Conduit_lwt.flow resolvers domain_name >>? fun flow ->
+    Conduit_lwt.resolve resolvers domain_name >>? fun flow ->
     Fetch.fetch_v1 ?prelude ~capabilities ?want ~host:domain_name path flow store access
       fetch_cfg (fun (payload, off, len) ->
         let v = String.sub payload off len in
@@ -296,7 +296,8 @@ struct
       ; mutable oc  : string
       ; mutable pos : int
       ; resolvers : Conduit.resolvers
-      ; uri : Uri.t }
+      ; uri : Uri.t 
+      ; headers : (string * string) list }
     type error = [ `Msg of string ]
 
     let pp_error = Rresult.R.pp_msg
@@ -310,7 +311,7 @@ struct
       if t.pos = String.length t.ic
       then
         let open Lwt.Infix in
-        HTTP.post ~resolvers:t.resolvers t.uri t.oc
+        HTTP.post ~resolvers:t.resolvers ~headers:t.headers t.uri t.oc
         >|= Rresult.(R.reword_error (R.msgf "%a" HTTP.pp_error))
         >>? fun (_resp, contents) ->
         t.ic <- t.ic ^ contents ; recv t raw
@@ -323,16 +324,16 @@ struct
 
   module Fetch_http = Nss.Fetch.Make (Scheduler) (Lwt) (Flow_http) (Uid) (Ref)
 
-  let http_fetch_v1 ~capabilities uri domain_name path ~resolvers ?want store access
+  let http_fetch_v1 ~capabilities uri ?(headers= []) domain_name path ~resolvers ?want store access
       fetch_cfg pack =
     let open Rresult in
     let open Lwt.Infix in
     let uri0 = Fmt.strf "%a/info/refs?service=git-upload-pack" Uri.pp uri in
     let uri0 = Uri.of_string uri0 in
-    HTTP.get ~resolvers uri0 >|= R.reword_error (R.msgf "%a" HTTP.pp_error) >>? fun (_resp, contents) ->
+    HTTP.get ~resolvers ~headers uri0 >|= R.reword_error (R.msgf "%a" HTTP.pp_error) >>? fun (_resp, contents) ->
     let uri1 = Fmt.strf "%a/git-upload-pack" Uri.pp uri in
     let uri1 = Uri.of_string uri1 in
-    let flow = { Flow_http.ic= contents; pos= 0; oc= ""; resolvers; uri= uri1; } in
+    let flow = { Flow_http.ic= contents; pos= 0; oc= ""; resolvers; uri= uri1; headers; } in
     Fetch_http.fetch_v1 ~prelude:false ~capabilities ?want ~host:domain_name path flow store access
       fetch_cfg (fun (payload, off, len) ->
         let v = String.sub payload off len in
@@ -344,13 +345,13 @@ struct
       ?(version = `V1) ?(capabilities = []) want ~src ~dst ~idx =
     let open Rresult in
     let open Lwt.Infix in
-    match version, edn.scheme with
-    | `V1, (`Git | `SSH _ as scheme) ->
-        let domain_name = edn.domain_name in
-        let path = edn.path in
+    let domain_name = edn.domain_name in
+    let path = edn.path in
+    let stream, pusher = Lwt_stream.create () in
+    let stream () = Lwt_stream.get stream in
+    let run = match version, edn.scheme with
+      | `V1, (`Git | `SSH _ as scheme) ->
         let fetch_cfg = Nss.Fetch.configuration capabilities in
-        let stream, pusher = Lwt_stream.create () in
-        let stream () = Lwt_stream.get stream in
         let prelude = match scheme with `Git -> true | `SSH _ -> false in
         (* XXX(dinosaure): the only tweak needed between git:// and SSH. *)
         let run () =
@@ -363,23 +364,19 @@ struct
           | Ok refs, Ok uid -> Lwt.return_ok (uid, refs)
           | (Error _ as err), _ -> Lwt.return err
           | Ok _refs, (Error _ as err) -> Lwt.return err in
-        Lwt.catch run (function
-          | Failure err -> Lwt.return_error (R.msg err)
-          | exn -> Lwt.return_error (`Exn exn))
-    | `V1, (`HTTP | `HTTPS as scheme) ->
-        let domain_name = edn.domain_name in
-        let path = edn.path in
+        run
+      | `V1, (`HTTP _ | `HTTPS _ as scheme) ->
         let fetch_cfg = Nss.Fetch.configuration ~stateless:true capabilities in
-        let stream, pusher = Lwt_stream.create () in
-        let stream () = Lwt_stream.get stream in
-        let uri = match scheme with
-          | `HTTP ->
-            Uri.of_string (Fmt.strf "http://%a%s.git" Domain_name.pp domain_name path)
-          | `HTTPS ->
-            Uri.of_string (Fmt.strf "https://%a%s.git" Domain_name.pp domain_name path) in
+        let uri, headers = match scheme with
+          | `HTTP headers ->
+            Uri.of_string (Fmt.strf "http://%a%s.git" Domain_name.pp domain_name path),
+            headers
+          | `HTTPS headers ->
+            Uri.of_string (Fmt.strf "https://%a%s.git" Domain_name.pp domain_name path),
+            headers in
         let run () =
           Lwt.both
-            (http_fetch_v1 ~capabilities uri domain_name path ~resolvers ~want store
+            (http_fetch_v1 ~capabilities uri ~headers domain_name path ~resolvers ~want store
                access fetch_cfg pusher)
             (run ~light_load ~heavy_load stream ~src ~dst ~idx)
           >>= fun (refs, idx) ->
@@ -387,10 +384,11 @@ struct
           | Ok refs, Ok uid -> Lwt.return_ok (uid, refs)
           | (Error _ as err), _ -> Lwt.return err
           | Ok _refs, (Error _ as err) -> Lwt.return err in
-        Lwt.catch run (function
-          | Failure err -> Lwt.return_error (R.msg err)
-          | exn -> Lwt.return_error (`Exn exn))
-    | _ -> assert false
+        run
+      | _ -> assert false in
+    Lwt.catch run (function
+      | Failure err -> Lwt.return_error (R.msg err)
+      | exn -> Lwt.return_error (`Exn exn))
 
   module Delta = Carton_lwt.Enc.Delta (Uid) (Verbose)
 
@@ -477,7 +475,7 @@ struct
   let push ~resolvers ~capabilities path cmds domain_name store access push_cfg
       pack =
     let open Lwt.Infix in
-    Conduit_lwt.flow resolvers domain_name >>? fun flow ->
+    Conduit_lwt.resolve resolvers domain_name >>? fun flow ->
     Push.push ~capabilities cmds ~host:domain_name path flow store access
       push_cfg pack
     >>= fun () -> Conduit_lwt.close flow

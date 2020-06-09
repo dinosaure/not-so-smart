@@ -45,7 +45,7 @@ module type HTTP = sig
 end
 
 type endpoint = private
-  { scheme : [ `SSH of string | `Git | `HTTP | `HTTPS ]
+  { scheme : [ `SSH of string | `Git | `HTTP of (string * string) list | `HTTPS of (string * string) list ]
   ; path : string
   ; domain_name : [ `host ] Domain_name.t }
 

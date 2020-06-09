@@ -11,7 +11,7 @@ type ('flow, 'error, 's) flow = {
   recv :
     'flow ->
     Cstruct.t ->
-    (([ `End_of_input | `Input of int ], 'error) result, 's) io;
+    (([ `End_of_flow | `Input of int ], 'error) result, 's) io;
   send : 'flow -> Cstruct.t -> ((int, 'error) result, 's) io;
   pp_error : Format.formatter -> 'error -> unit;
 }
@@ -91,7 +91,7 @@ module type FLOW = sig
   type error
 
   val recv :
-    t -> Cstruct.t -> ([ `End_of_input | `Input of int ], error) result fiber
+    t -> Cstruct.t -> ([ `End_of_flow | `Input of int ], error) result fiber
 
   val send : t -> Cstruct.t -> (int, error) result fiber
 

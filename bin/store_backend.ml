@@ -5,8 +5,12 @@ let src = Logs.Src.create "store"
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+type ('k, 'v) t =
+  { tbl : ('k, 'v) Hashtbl.t
+  ; path : Fpath.t }
+
 module Store = Sigs.Make_store (struct
-  type ('k, 'v) t = ('k, 'v) Hashtbl.t
+  type nonrec ('k, 'v) t = ('k, 'v) t
 end)
 
 type git = Store.t
@@ -231,30 +235,30 @@ let timestamp_of_commit path uid =
       failwithf "%a" R.pp_msg err
 
 let get_object_for_packer path (uid : Uid.t) =
-  kind_of_object path (uid :> string) >>= function
+  kind_of_object path (Uid.to_hex uid) >>= function
   | Some `Commit ->
-      parents_of_commit path (uid :> string) >>| List.map Uid.of_hex
+      parents_of_commit path (Uid.to_hex uid) >>| List.map Uid.of_hex
       >>= fun preds ->
-      root_tree_of_commit path (uid :> string) >>| Uid.of_hex >>= fun root ->
-      timestamp_of_commit path (uid :> string) >>= fun ts ->
+      root_tree_of_commit path (Uid.to_hex uid) >>| Uid.of_hex >>= fun root ->
+      timestamp_of_commit path (Uid.to_hex uid) >>= fun ts ->
       R.ok (Some (Pck.make ~kind:Pck.commit { Pck.root; Pck.preds } ~ts uid))
   | Some `Tree ->
-      preds_of_tree path (uid :> string) >>| List.map Uid.of_hex >>= fun uids ->
+      preds_of_tree path (Uid.to_hex uid) >>| List.map Uid.of_hex >>= fun uids ->
       R.ok (Some (Pck.make ~kind:Pck.tree uids uid))
   | Some `Blob -> R.ok (Some (Pck.make ~kind:Pck.blob Pck.Leaf uid))
   | Some `Tag ->
-      commit_of_tag path (uid :> string) >>| Uid.of_hex >>= fun commit ->
+      commit_of_tag path (Uid.to_hex uid) >>| Uid.of_hex >>= fun commit ->
       R.ok (Some (Pck.make ~kind:Pck.tag commit uid))
   | None -> R.ok None
 
-let get_object_for_packer { return; _ } path uid store =
-  let store = Store.prj store in
-  match Hashtbl.find store uid with
+let get_object_for_packer { return; _ } uid store =
+  let { tbl; path; } = Store.prj store in
+  match Hashtbl.find tbl uid with
   | v -> return (Some v)
   | exception Not_found ->
   match get_object_for_packer path uid with
   | Ok (Some v) ->
-      Hashtbl.replace store uid v ;
+      Hashtbl.replace tbl uid v ;
       return (Some v)
   | Ok None -> return None
   | Error err ->
@@ -269,7 +273,7 @@ let get_commit_for_negotiation path (uid : Uid.t) =
       fun () ->
         out_string ~trim:true
           (run_out ~err:OS.Cmd.err_null
-             Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % (uid :> string))))
+             Cmd.(v "git" % "show" % "-s" % "--pretty=%ct" % (Uid.to_hex uid))))
     ()
   |> R.join
   >>= function
@@ -282,22 +286,21 @@ let get_commit_for_negotiation path (uid : Uid.t) =
 let parents :
     type s.
     s scheduler ->
-    Fpath.t ->
     Uid.t ->
     (Uid.t, Uid.t * int ref * int64, git) store ->
     ((Uid.t * int ref * int64) list, s) io =
- fun { Sigs.return; _ } path uid store ->
-  let store = Store.prj store in
-  match parents_of_commit path (uid :> string) with
+  fun { Sigs.return; _ } uid store ->
+  let { tbl; path; } = Store.prj store in
+  match parents_of_commit path (Uid.to_hex uid) with
   | Ok uids -> (
       let map uid =
         let uid = Uid.of_hex uid in
-        match Hashtbl.find store uid with
+        match Hashtbl.find tbl uid with
         | obj -> obj
         | exception Not_found ->
         match get_commit_for_negotiation path uid with
         | Ok (Some obj) ->
-            Hashtbl.add store uid obj ;
+            Hashtbl.add tbl uid obj ;
             obj
         | Ok None ->
             assert false
@@ -312,8 +315,9 @@ let parents :
       failwithf "%a" R.pp_msg err
 
 let deref :
-    type s. s scheduler -> Fpath.t -> 'store -> Ref.t -> (Uid.t option, s) io =
- fun { Sigs.return; _ } path _ reference ->
+    type s. s scheduler -> (_, _, git) store -> Ref.t -> (Uid.t option, s) io =
+ fun { Sigs.return; _ } store reference ->
+  let { path; _ } = Store.prj store in
   let fiber =
     let open Bos in
     OS.Dir.with_current path
@@ -334,10 +338,10 @@ let deref :
 let locals :
     type s.
     s scheduler ->
-    Fpath.t ->
     (Uid.t, Uid.t * int ref * int64, git) store ->
     (Ref.t list, s) io =
- fun { Sigs.return; _ } path _ ->
+ fun { Sigs.return; _ } store ->
+  let { path; _ } = Store.prj store in
   let fiber =
     let open Bos in
     OS.Dir.with_current path
@@ -359,14 +363,14 @@ let locals :
       Log.err (fun m -> m "Got an error [local]: %a" R.pp_msg err) ;
       failwithf "%a" R.pp_msg err
 
-let get_commit_for_negotiation { Sigs.return; _ } path uid store =
-  let store = Store.prj store in
-  match Hashtbl.find store uid with
+let get_commit_for_negotiation { Sigs.return; _ } uid store =
+  let { tbl; path; } = Store.prj store in
+  match Hashtbl.find tbl uid with
   | v -> return (Some v)
   | exception Not_found ->
   match get_commit_for_negotiation path uid with
   | Ok (Some obj) ->
-      Hashtbl.replace store uid obj ;
+      Hashtbl.replace tbl uid obj ;
       return (Some obj)
   | Ok None -> return None
   | Error err ->
@@ -377,12 +381,11 @@ let get_commit_for_negotiation { Sigs.return; _ } path uid store =
 let access :
     type s.
     s scheduler ->
-    Fpath.t ->
     (Uid.t, Ref.t, Uid.t * int ref * int64, git, s) access =
- fun scheduler path ->
+ fun scheduler ->
   {
-    get = get_commit_for_negotiation scheduler path;
-    parents = parents scheduler path;
-    deref = deref scheduler path;
-    locals = locals scheduler path;
+    get = get_commit_for_negotiation scheduler ;
+    parents = parents scheduler ;
+    deref = deref scheduler ;
+    locals = locals scheduler ;
   }
