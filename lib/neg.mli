@@ -52,7 +52,7 @@ val find_common :
   'uid negotiator ->
   Smart.context ->
   'uid list ->
-  (int, 's) io
+  ([ `Continue of int | `Close ], 's) io
 
 val tips :
   's scheduler ->

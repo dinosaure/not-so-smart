@@ -36,6 +36,16 @@ module Advertised_refs : sig
     fref:('ref0 -> 'ref1) ->
     ('uid0, 'ref0) t ->
     ('uid1, 'ref1) t
+
+  val v1 :
+    ?shallows:'uid list ->
+    ?capabilities:Capability.t list ->
+    ('uid * 'ref * bool) list -> ('uid, 'ref) t
+
+  val equal :
+    uid:('uid -> 'uid -> bool) ->
+    reference:('ref -> 'ref -> bool) ->
+    ('uid, 'ref) t -> ('uid, 'ref) t -> bool
 end
 
 module Proto_request : sig
@@ -172,7 +182,8 @@ type error =
   | `Invalid_result of string
   | `Invalid_command_result of string
   | `No_enough_space
-  | `Unexpected_flush ]
+  | `Unexpected_flush
+  | `Invalid_pkt_line ]
 
 val pp_error : error Fmt.t
 
@@ -218,6 +229,10 @@ val ack : string Negotiation.t recv
 val shallows : string Shallow.t list recv
 
 val status : string Status.t recv
+
+val packet : trim:bool -> string recv
+
+val send_advertised_refs : (string, string) Advertised_refs.t send
 
 val bind : ('a, 'err) t -> f:('a -> ('b, 'err) t) -> ('b, 'err) t
 

@@ -1,7 +1,7 @@
 module type APPEND = sig
   type t
 
-  type uid
+  type uid and fd
 
   type error
 
@@ -9,15 +9,15 @@ module type APPEND = sig
 
   val pp_error : error Fmt.t
 
-  val create : uid -> (t, error) result fiber
+  val create : t -> uid -> (fd, error) result fiber
 
-  val map : t -> pos:int64 -> int -> Bigstringaf.t fiber
+  val map : t -> fd -> pos:int64 -> int -> Bigstringaf.t fiber
 
-  val append : t -> string -> unit fiber
+  val append : t -> fd -> string -> unit fiber
 
-  val move : src:uid -> dst:uid -> (unit, error) result fiber
+  val move : t -> src:uid -> dst:uid -> (unit, error) result fiber
 
-  val close : t -> (unit, error) result fiber
+  val close : t -> fd -> (unit, error) result fiber
 end
 
 module type UID = sig
@@ -54,7 +54,8 @@ val endpoint_of_string : string -> (endpoint, [> `Msg of string ]) result
 
 module Make
     (Scheduler : Sigs.SCHED with type +'a s = 'a Lwt.t)
-    (Append : APPEND with type +'a fiber = 'a Lwt.t)
+    (Pack : APPEND with type +'a fiber = 'a Lwt.t)
+    (Index : APPEND with type +'a fiber = 'a Lwt.t)
     (HTTP : HTTP)
     (Uid : UID)
     (Ref : Sigs.REF) : sig
@@ -68,11 +69,12 @@ module Make
     ?version:[> `V1 ] ->
     ?capabilities:Smart.Capability.t list ->
     [ `All | `Some of Ref.t list | `None ] ->
-    src:Append.uid ->
-    dst:Append.uid ->
-    idx:Append.uid ->
-    ( Uid.t * Ref.t list,
-      [> `Msg of string | `Exn of exn | `Invalid_key | `Not_found | `Unresolved ]
+    Pack.t -> Index.t ->
+    src:Pack.uid ->
+    dst:Pack.uid ->
+    idx:Index.uid ->
+    ( [ `Pack of Uid.t * (Ref.t * Uid.t) list | `Empty ],
+      [> `Msg of string | `Exn of exn | `Not_found ]
     )
     result
     Lwt.t
@@ -88,7 +90,7 @@ module Make
     ?capabilities:Smart.Capability.t list ->
     [ `Create of Ref.t | `Delete of Ref.t | `Update of Ref.t * Ref.t ] list ->
     ( unit,
-      [> `Msg of string | `Exn of exn | `Invalid_key | `Not_found | `Unresolved ]
+      [> `Msg of string | `Exn of exn | `Not_found ]
     )
     result
     Lwt.t

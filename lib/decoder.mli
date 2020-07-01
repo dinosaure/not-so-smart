@@ -19,7 +19,8 @@ type error =
   | `Expected_eol_or_space
   | `Unexpected_end_of_input
   | `No_enough_space
-  | `Assert_predicate of char -> bool ]
+  | `Assert_predicate of char -> bool
+  | `Invalid_pkt_line ]
 
 val pp_error : error Fmt.t
 

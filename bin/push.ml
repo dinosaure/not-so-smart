@@ -10,11 +10,11 @@ let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
 let ( <.> ) f g x = f (g x)
 
-module G = Git.Make (Scheduler) (Append) (HTTP) (Uid) (Ref)
+module G = Smart_git.Make (Scheduler) (Append) (Append) (HTTP) (Uid) (Ref)
 
 let resolvers =
-  Conduit_lwt.add Conduit_lwt_unix_tcp.protocol
-    (Conduit_lwt_unix_tcp.resolv_conf ~port:9418)
+  Conduit_lwt.add Conduit_lwt.TCP.protocol
+    (Conduit_lwt.TCP.resolve ~port:9418)
     Conduit.empty
 
 let push uri ?(version = `V1) ?(capabilities = []) cmds path =
@@ -44,8 +44,8 @@ let push level style_renderer repository cmds path =
 open Cmdliner
 
 let edn =
-  let parser = Git.endpoint_of_string in
-  let pp = Git.pp_endpoint in
+  let parser = Smart_git.endpoint_of_string in
+  let pp = Smart_git.pp_endpoint in
   Arg.conv (parser, pp)
 
 let command =

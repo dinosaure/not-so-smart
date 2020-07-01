@@ -43,7 +43,9 @@ struct
       Sigs.return = (fun x -> inj (return x));
     }
 
-  let fail exn = inj (IO.fail exn)
+  let fail exn =
+    let fail = IO.fail exn in
+    inj fail
 
   let io =
     {
@@ -86,25 +88,26 @@ struct
       let uids, refs = references refs (Smart.Advertised_refs.refs v) in
       update ctx (Smart.Advertised_refs.capabilities v) ;
       return (uids, refs) in
-    let pack ctx =
-      let open Smart in
-      let side_band =
-        Smart.shared `Side_band ctx || Smart.shared `Side_band_64k ctx in
-      recv ctx
-        (recv_pack ~side_band ~push_stdout:ignore ~push_stderr:ignore
-           ~push_pack:pack) in
     let ctx = Smart.make capabilities in
     let negotiator = Neg.negotiator ~compare:Uid.compare in
     Neg.tips sched access store negotiator |> prj >>= fun () ->
     Neg.run sched fail io flow (prelude ctx) |> prj >>= fun (uids, refs) ->
     let hex = { Neg.to_hex = Uid.to_hex; Neg.of_hex = Uid.of_hex; Neg.compare= Uid.compare; } in
-    Neg.find_common sched io flow fetch_cfg hex access store negotiator ctx uids
-    |> prj
-    >>= fun res ->
-    if res < 0 then Log.warn (fun m -> m "No common commits") ;
-    let rec go () =
-      Neg.run sched fail io flow (pack ctx) |> prj >>= fun continue ->
-      if continue then go () else return () in
-    Log.debug (fun m -> m "Start to download PACK file.") ;
-    go () >>= fun () -> return refs
+    Neg.find_common sched io flow fetch_cfg hex access store negotiator ctx uids |> prj >>= function
+    | `Close -> return []
+    | `Continue res ->
+      let pack ctx =
+        let open Smart in
+        let side_band =
+          Smart.shared `Side_band ctx || Smart.shared `Side_band_64k ctx in
+        recv ctx
+          (recv_pack ~side_band ~push_stdout:ignore ~push_stderr:ignore
+             ~push_pack:pack) in
+      if res < 0 then Log.warn (fun m -> m "No common commits") ;
+      let rec go () =
+        Log.debug (fun m -> m "Read PACK file.") ;
+        Neg.run sched fail io flow (pack ctx) |> prj >>= fun continue ->
+        if continue then go () else return () in
+      Log.debug (fun m -> m "Start to download PACK file.") ;
+      go () >>= fun () -> return (List.combine refs uids)
 end

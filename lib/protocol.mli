@@ -28,6 +28,16 @@ module Advertised_refs : sig
     fref:('ref0 -> 'ref1) ->
     ('uid0, 'ref0) t ->
     ('uid1, 'ref1) t
+
+  val equal :
+    uid:('uid -> 'uid -> bool) ->
+    reference:('ref -> 'ref -> bool) ->
+    ('uid, 'ref) t -> ('uid, 'ref) t -> bool
+
+  val v1 :
+    ?shallows:'uid list ->
+    ?capabilities:Capability.t list ->
+    ('uid * 'ref * bool) list -> ('uid, 'ref) t
 end
 
 module Proto_request : sig
@@ -146,7 +156,8 @@ module Decoder : sig
     | `Invalid_ack of string
     | `Invalid_result of string
     | `Invalid_command_result of string
-    | `Unexpected_flush ]
+    | `Unexpected_flush
+    | `Invalid_pkt_line ]
 
   val pp_error : error Fmt.t
 
@@ -168,6 +179,8 @@ module Decoder : sig
   val decode_shallows : decoder -> (string Shallow.t list, [> error ]) state
 
   val decode_status : decoder -> (string Status.t, [> error ]) state
+
+  val decode_packet : trim:bool -> decoder -> (string, [> error]) state
 end
 
 module Encoder : sig
@@ -186,6 +199,8 @@ module Encoder : sig
   val encode_flush : encoder -> error state
 
   val encode_commands : encoder -> (string, string) Commands.t -> error state
+
+  val encode_advertised_refs : encoder -> (string, string) Advertised_refs.t -> error state
 
   val encode_pack :
     ?side_band:bool -> ?stateless:bool -> encoder -> string -> error state

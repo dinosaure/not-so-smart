@@ -10,7 +10,7 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 let failwithf fmt = Fmt.kstrf (fun err -> Lwt.fail (Failure err)) fmt
 
-module G = Git.Make (Scheduler) (Append) (HTTP) (Uid) (Ref)
+module G = Smart_git.Make (Scheduler) (Append) (Append) (HTTP) (Uid) (Ref)
 
 let ( >>? ) = Lwt_result.bind
 
@@ -26,7 +26,7 @@ let fetch edn ~resolvers ?(version = `V1) ?(capabilities = []) want path =
   Bos.OS.File.tmp "pack-%s.idx" |> Lwt.return >>? fun tmp2 ->
   G.fetch ~resolvers
     (access, light_load, heavy_load)
-    store edn ~version ~capabilities want ~src:tmp0 ~dst:tmp1 ~idx:tmp2
+    store edn ~version ~capabilities want (Fpath.v "/") (Fpath.v "/") ~src:tmp0 ~dst:tmp1 ~idx:tmp2
   >>? fun (uid, _refs) ->
   let pck = fpathf "pack-%a.pack" Uid.pp uid in
   let idx = fpathf "pack-%a.idx" Uid.pp uid in
@@ -34,13 +34,13 @@ let fetch edn ~resolvers ?(version = `V1) ?(capabilities = []) want path =
   Bos.OS.Path.move tmp2 idx |> Lwt.return >>? fun () -> Lwt.return_ok ()
 
 let resolvers =
-  Conduit_lwt.add Conduit_lwt_unix_tcp.protocol
-    (Conduit_lwt_unix_tcp.resolv_conf ~port:9418)
+  Conduit_lwt.add Conduit_lwt.TCP.protocol
+    (Conduit_lwt.TCP.resolve ~port:9418)
     Conduit.empty
 
 module SSH = Awa_conduit.Make(Lwt)(Conduit_lwt)(Mclock)
 
-let ssh_protocol = SSH.protocol_with_ssh Conduit_lwt_unix_tcp.protocol
+let ssh_protocol = SSH.protocol_with_ssh Conduit_lwt.TCP.protocol
 
 let fetch all thin _depth no_done no_progress level style_renderer repository
     authenticator seed want path =
@@ -64,16 +64,16 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
     | false, _ :: _ -> `Some want
     | false, [] -> `All in
   let resolvers = match repository, seed with
-    | { Git.scheme= `SSH user; path; _ }, Some seed ->
+    | { Smart_git.scheme= `SSH user; path; _ }, Some seed ->
       let req = Awa.Ssh.Exec (Fmt.strf "git-upload-pack '%s'" path) in
       let ssh = { Awa_conduit.user; key= seed; req; authenticator; } in
       let resolve domain_name =
         let open Lwt.Infix in
-        Conduit_lwt_unix_tcp.resolv_conf ~port:22 domain_name >>= function
+        Conduit_lwt.TCP.resolve ~port:22 domain_name >>= function
         | Some edn -> Lwt.return (Some (edn, ssh))
         | None -> Lwt.return_none in
       R.ok (Conduit_lwt.add ~priority:0 ssh_protocol resolve resolvers)
-    | { Git.scheme= `SSH _; _ }, None ->
+    | { Smart_git.scheme= `SSH _; _ }, None ->
       R.error_msgf "An ssh fetch requires a seed argument"
     | _ -> R.ok resolvers in
   resolvers >>= fun resolvers ->
@@ -82,8 +82,8 @@ let fetch all thin _depth no_done no_progress level style_renderer repository
 open Cmdliner
 
 let edn =
-  let parser = Git.endpoint_of_string in
-  let pp = Git.pp_endpoint in
+  let parser = Smart_git.endpoint_of_string in
+  let pp = Smart_git.pp_endpoint in
   Arg.conv (parser, pp)
 
 let authenticator =

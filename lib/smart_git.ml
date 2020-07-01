@@ -1,7 +1,7 @@
 module type APPEND = sig
   type t
 
-  type uid
+  type uid and fd
 
   type error
 
@@ -9,15 +9,15 @@ module type APPEND = sig
 
   val pp_error : error Fmt.t
 
-  val create : uid -> (t, error) result fiber
+  val create : t -> uid -> (fd, error) result fiber
 
-  val map : t -> pos:int64 -> int -> Bigstringaf.t fiber
+  val map : t -> fd -> pos:int64 -> int -> Bigstringaf.t fiber
 
-  val append : t -> string -> unit fiber
+  val append : t -> fd -> string -> unit fiber
 
-  val move : src:uid -> dst:uid -> (unit, error) result fiber
+  val move : t -> src:uid -> dst:uid -> (unit, error) result fiber
 
-  val close : t -> (unit, error) result fiber
+  val close : t -> fd -> (unit, error) result fiber
 end
 
 module type UID = sig
@@ -45,6 +45,7 @@ module type HTTP = sig
     resolvers:Conduit.resolvers ->
     ?headers:(string * string) list ->
     Uri.t -> (unit * string, error) result Lwt.t
+
   val post :
     resolvers:Conduit.resolvers ->
     ?headers:(string * string) list ->
@@ -108,11 +109,16 @@ let endpoint_of_string str =
 
 module Make
     (Scheduler : Sigs.SCHED with type +'a s = 'a Lwt.t)
-    (Append : APPEND with type +'a fiber = 'a Lwt.t)
+    (Pack : APPEND with type +'a fiber = 'a Lwt.t)
+    (Index : APPEND with type +'a fiber = 'a Lwt.t)
     (HTTP : HTTP)
     (Uid : UID)
     (Ref : Sigs.REF) =
 struct
+  let src = Logs.Src.create "git-fetch"
+
+  module Log = (val Logs.src_log src : Logs.LOG)
+
   module Thin = Carton_lwt.Thin.Make (Uid)
 
   let fs =
@@ -120,13 +126,13 @@ struct
     let open Lwt.Infix in
     {
       Thin.create =
-        (fun path ->
-          Append.create path >|= R.reword_error (R.msgf "%a" Append.pp_error));
-      Thin.append = Append.append;
-      Thin.map = Append.map;
+        (fun t path ->
+          Pack.create t path >|= R.reword_error (R.msgf "%a" Pack.pp_error));
+      Thin.append = Pack.append;
+      Thin.map = Pack.map;
       Thin.close =
-        (fun fd ->
-          Append.close fd >|= R.reword_error (R.msgf "%a" Append.pp_error));
+        (fun t fd ->
+          Pack.close t fd >|= R.reword_error (R.msgf "%a" Pack.pp_error));
     }
 
   (* XXX(dinosaure): abstract it? *)
@@ -166,9 +172,9 @@ struct
       Carton.return = (fun x -> inj (Lwt.return x));
     }
 
-  let finish_it ~pack ~weight ~where offsets =
+  let finish_it t ~pack ~weight ~where offsets =
     let open Lwt.Infix in
-    Append.create pack >>? fun fd ->
+    Pack.create t pack >>? fun fd ->
     let zl_buffer = De.bigstring_create De.io_buffer_size in
     let allocate bits = De.make_window ~bits in
     let pack =
@@ -178,14 +184,14 @@ struct
       let max = Int64.sub weight pos in
       let len = min max (Int64.of_int len) in
       let len = Int64.to_int len in
-      CartonSched.inj (Append.map fd ~pos len) in
+      CartonSched.inj (Pack.map t fd ~pos len) in
     let rec go entries = function
       | [] -> Lwt.return entries
       | (offset, crc) :: offsets ->
           Lwt.catch
             (fun () ->
               Carton.Dec.weight_of_offset sched ~map pack
-                ~weight:Carton.Dec.null ~cursor:offset
+                ~weight:Carton.Dec.null offset
               |> CartonSched.prj
               >>= fun weight ->
               let raw = Carton.Dec.make_raw ~weight in
@@ -201,13 +207,15 @@ struct
               Printexc.print_backtrace stdout ;
               Lwt.fail exn) in
     go [] offsets >>= fun entries ->
-    Append.close fd >>? fun () -> Lwt.return_ok entries
+    Pack.close t fd >>? fun () -> Lwt.return_ok entries
 
-  let run_pck ~light_load ~heavy_load stream ~src ~dst =
+  let run_pck ~light_load ~heavy_load stream t ~src ~dst =
     let open Rresult in
     let open Lwt.Infix in
     Lwt.catch
-      (fun () -> Thin.verify ~digest src fs stream)
+      (fun () ->
+         Log.debug (fun m -> m "Start to verify the given stream.") ;
+         Thin.verify ~digest ~threads:1 t src fs stream)
       (function
         | Failure err -> Lwt.return_error (R.msg err)
         | Invalid_argument err -> Lwt.return_error (R.msg err)
@@ -215,10 +223,12 @@ struct
     >>= function
     | Error _ as err -> Lwt.return err
     | Ok (_, [], [], entries, _weight, uid) ->
-        Append.move ~src ~dst >|= R.reword_error (R.msgf "%a" Append.pp_error)
+        Log.debug (fun m -> m "Given PACK file is not thin, move it!") ;
+        Pack.move t ~src ~dst >|= R.reword_error (R.msgf "%a" Pack.pp_error)
         >>? fun () -> Lwt.return_ok (uid, Array.of_list entries)
     | Ok (n, uids, unresolveds, entries, weight, _uid) ->
-        Thin.canonicalize ~light_load ~heavy_load ~src ~dst fs n uids weight
+        Log.debug (fun m -> m "Given PACK file is thin, canonicalize!") ;
+        Thin.canonicalize ~light_load ~heavy_load ~src ~dst t fs n uids weight
         >>? fun (shift, weight, uid, entries') ->
         let where = Hashtbl.create 0x100 in
         let entries =
@@ -234,8 +244,8 @@ struct
         let unresolveds =
           let fold (offset, crc) = (Int64.add offset shift, crc) in
           List.map fold unresolveds in
-        finish_it ~pack:dst ~weight ~where unresolveds
-        >|= R.reword_error (R.msgf "%a" Append.pp_error)
+        finish_it ~pack:dst ~weight ~where t unresolveds
+        >|= R.reword_error (R.msgf "%a" Pack.pp_error)
         >>? fun entries'' ->
         let entries = List.rev_append entries' entries in
         let entries = List.rev_append entries'' entries in
@@ -243,27 +253,28 @@ struct
 
   module Enc = Carton.Dec.Idx.N (Uid)
 
-  let run_idx ~dst ~pack entries =
+  let run_idx t ~dst ~pack entries =
     let open Lwt.Infix in
     let encoder = Enc.encoder `Manual ~pack entries in
     let buf = Bigstringaf.create De.io_buffer_size in
     Enc.dst encoder buf 0 (Bigstringaf.length buf) ;
-    Append.create dst >>? fun fd ->
+    Index.create t dst >>? fun fd ->
     let rec go = function
       | `Partial ->
           let len = Bigstringaf.length buf - Enc.dst_rem encoder in
-          Append.append fd (Bigstringaf.substring buf ~off:0 ~len) >>= fun () ->
+          Index.append t fd (Bigstringaf.substring buf ~off:0 ~len) >>= fun () ->
           Enc.dst encoder buf 0 (Bigstringaf.length buf) ;
           go (Enc.encode encoder `Await)
       | `Ok -> Lwt.return_ok () in
-    go (Enc.encode encoder `Await) >>? fun () -> Append.close fd
+    go (Enc.encode encoder `Await) >>? fun () -> Index.close t fd
 
-  let run ~light_load ~heavy_load stream ~src ~dst ~idx =
+  let run ~light_load ~heavy_load stream t_pck t_idx ~src ~dst ~idx =
     let open Rresult in
     let open Lwt.Infix in
-    run_pck ~light_load ~heavy_load stream ~src ~dst >>? fun (pack, entries) ->
-    run_idx ~dst:idx ~pack entries
-    >|= R.reword_error (R.msgf "%a" Append.pp_error)
+    run_pck ~light_load ~heavy_load stream t_pck ~src ~dst
+    >>? fun (pack, entries) ->
+    (run_idx t_idx ~dst:idx ~pack entries
+     >|= R.reword_error (R.msgf "%a" Index.pp_error))
     >>? fun () -> Lwt.return_ok pack
 
   module Flow = struct
@@ -281,13 +292,16 @@ struct
       fetch_cfg pack =
     let open Lwt.Infix in
     Conduit_lwt.resolve resolvers domain_name >>? fun flow ->
-    Fetch.fetch_v1 ?prelude ~capabilities ?want ~host:domain_name path flow store access
-      fetch_cfg (fun (payload, off, len) ->
-        let v = String.sub payload off len in
-        pack (Some (v, 0, len)))
-    >>= fun refs ->
-    pack None ;
-    Conduit_lwt.close flow >>? fun () -> Lwt.return_ok refs
+    Lwt.try_bind
+      (fun () ->
+         Fetch.fetch_v1 ?prelude ~capabilities ?want ~host:domain_name path flow store access
+           fetch_cfg (fun (payload, off, len) ->
+               let v = String.sub payload off len in
+               pack (Some (v, 0, len))))
+      (fun refs -> pack None ; Conduit_lwt.close flow >>? fun () -> Lwt.return_ok refs)
+      (fun exn -> pack None ; Conduit_lwt.close flow >>= fun _ ->
+        Fmt.epr ">>> Got an exception.\n%!" ;
+        Lwt.fail exn)
 
   module Flow_http = struct
     type +'a fiber = 'a Lwt.t
@@ -296,7 +310,7 @@ struct
       ; mutable oc  : string
       ; mutable pos : int
       ; resolvers : Conduit.resolvers
-      ; uri : Uri.t 
+      ; uri : Uri.t
       ; headers : (string * string) list }
     type error = [ `Msg of string ]
 
@@ -342,27 +356,33 @@ struct
     pack None ; Lwt.return_ok refs
 
   let fetch ~resolvers (access, light_load, heavy_load) store edn
-      ?(version = `V1) ?(capabilities = []) want ~src ~dst ~idx =
+      ?(version = `V1) ?(capabilities = []) want t_pck t_idx ~src ~dst ~idx =
     let open Rresult in
     let open Lwt.Infix in
     let domain_name = edn.domain_name in
     let path = edn.path in
     let stream, pusher = Lwt_stream.create () in
+    let pusher = function
+      | Some (_, _, len) as v ->
+        Log.debug (fun m -> m "Download %d byte(s) of the PACK file." len) ; pusher v
+      | None ->
+        Log.debug (fun m -> m "End of pack.") ; pusher None in
     let stream () = Lwt_stream.get stream in
     let run = match version, edn.scheme with
       | `V1, (`Git | `SSH _ as scheme) ->
         let fetch_cfg = Nss.Fetch.configuration capabilities in
         let prelude = match scheme with `Git -> true | `SSH _ -> false in
-        (* XXX(dinosaure): the only tweak needed between git:// and SSH. *)
+        (* XXX(dinosaure): [prelude] is the only tweak needed between git:// and SSH. *)
         let run () =
           Lwt.both
-            (fetch_v1 ~prelude ~capabilities path ~resolvers ~want domain_name store
-               access fetch_cfg pusher)
-            (run ~light_load ~heavy_load stream ~src ~dst ~idx)
+             (fetch_v1 ~prelude ~capabilities path ~resolvers ~want domain_name store
+                access fetch_cfg pusher)
+             (run ~light_load ~heavy_load stream t_pck t_idx ~src ~dst ~idx)
           >>= fun (refs, idx) ->
           match (refs, idx) with
-          | Ok refs, Ok uid -> Lwt.return_ok (uid, refs)
+          | Ok refs, Ok uid -> Lwt.return_ok (`Pack (uid, refs))
           | (Error _ as err), _ -> Lwt.return err
+          | Ok [], _ -> Lwt.return_ok `Empty
           | Ok _refs, (Error _ as err) -> Lwt.return err in
         run
       | `V1, (`HTTP _ | `HTTPS _ as scheme) ->
@@ -378,11 +398,12 @@ struct
           Lwt.both
             (http_fetch_v1 ~capabilities uri ~headers domain_name path ~resolvers ~want store
                access fetch_cfg pusher)
-            (run ~light_load ~heavy_load stream ~src ~dst ~idx)
+            (run ~light_load ~heavy_load stream t_pck t_idx ~src ~dst ~idx)
           >>= fun (refs, idx) ->
           match (refs, idx) with
-          | Ok refs, Ok uid -> Lwt.return_ok (uid, refs)
+          | Ok refs, Ok uid -> Lwt.return_ok (`Pack (uid, refs))
           | (Error _ as err), _ -> Lwt.return err
+          | Ok [], _ -> Lwt.return_ok `Empty
           | Ok _refs, (Error _ as err) -> Lwt.return err in
         run
       | _ -> assert false in

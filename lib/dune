@@ -29,7 +29,7 @@
  (libraries sigs neg pck))
 
 (library
- (name git)
+ (name smart_git)
  (public_name nss.git)
- (modules git)
- (libraries emile awa-conduit conduit-lwt conduit-mirage uri sigs nss digestif carton-lwt))
+ (modules smart_git)
+ (libraries emile conduit-lwt uri sigs nss digestif carton-lwt))

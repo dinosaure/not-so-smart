@@ -21,5 +21,5 @@ module Make
     (Uid.t, _, Uid.t * int ref * int64, 'g, Scheduler.t) access ->
     configuration ->
     (string * int * int -> unit) ->
-    Ref.t list IO.t
+    (Ref.t * Uid.t) list IO.t
 end

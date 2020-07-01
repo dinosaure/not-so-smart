@@ -15,4 +15,15 @@ run-test: [ "dune" "runtest" "-p" name "-j" jobs ]
 depends: [
   "ocaml"       {>= "4.07.0"}
   "dune"
+  "rresult"
+  "domain-name"
+  "astring"
+  "fmt"
+  "logs"
+  "psq"
+  "carton-lwt"
+  "conduit-lwt"
+  "uri"
+  "digestif"
+  "emile"
 ]

@@ -40,7 +40,6 @@ let run :
             go (eof ())
         | Ok (`Input len) ->
             Log.debug (fun m -> m "Got %d/%d byte(s)." len max) ;
-            Log.debug (fun m -> m "%S" (Cstruct.to_string (Cstruct.sub tmp 0 len))) ;
             Cstruct.blit_to_bytes tmp 0 buffer off len ;
             go (k len)
         | Error err ->
@@ -54,7 +53,7 @@ let run :
             send flow tmp >>= function
             | Ok shift -> loop (Cstruct.shift tmp shift)
             | Error err -> failwithf "%a" pp_error err in
-        Log.debug (fun m -> m "Write %S.\n%!" (String.sub buffer off len)) ;
+        Log.debug (fun m -> m "Write %d byte(s)." len) ;
         loop (Cstruct.of_string buffer ~off ~len)
     | Smart.Return v -> return v
     | Smart.Error (`Protocol err) ->
@@ -118,8 +117,9 @@ let find_common ({ bind; return } as scheduler) io flow
     | None -> return ((remote_uid, ref 0) :: acc) in
   fold_left_s ~f:fold [] refs >>| List.sort_uniq (fun (a, _) (b, _) -> compare a b) >>= function
   | [] ->
+      Log.debug (fun m -> m "Nothing to download.") ;
       run scheduler raise io flow Smart.(send ctx flush ()) >>= fun () ->
-      return 0
+      return `Close
   | uid :: others ->
     Log.debug (fun m -> m "We want %d commit(s)." (List.length (uid :: others))) ;
       run scheduler raise io flow
@@ -157,7 +157,7 @@ let find_common ({ bind; return } as scheduler) io flow
               incr flushes ;
               flush_at := next_flush stateless !count ;
               if (not stateless) && !count = _initial_flush
-              then ( Fmt.epr "NEXT NEGOTIATION.\n%!" ; go negotiator )
+              then go negotiator
               else
                 run scheduler raise io flow Smart.(recv ctx shallows)
                 >>= fun _shallows ->
@@ -247,7 +247,7 @@ let find_common ({ bind; return } as scheduler) io flow
           >>| Smart.Negotiation.map ~f:of_hex
           >>= fun ack ->
           match ack with
-          | Smart.Negotiation.ACK _ -> return 0
+          | Smart.Negotiation.ACK _ -> return (`Continue 0)
           | Smart.Negotiation.ACK_common _ | Smart.Negotiation.ACK_continue _
           | Smart.Negotiation.ACK_ready _ ->
               cfg.multi_ack <- `Some ;
@@ -256,6 +256,6 @@ let find_common ({ bind; return } as scheduler) io flow
               decr flushes ;
               go ())
         else if !count > 0
-        then return !retval
-        else return 0 in
+        then return (`Continue !retval)
+        else return (`Continue 0) in
       go ()

@@ -8,6 +8,26 @@ module Advertised_refs = struct
     version : int;
   }
 
+  let equal_shallows ~uid:equal_uid l0 l1 =
+    if List.length l0 <> List.length l1 then false
+    else List.for_all (fun uid0 -> List.exists (equal_uid uid0) l1) l0
+
+  let equal_advertised_refs ~uid:equal_uid ~reference:equal_reference l0 l1 =
+    if List.length l0 <> List.length l1 then false
+    else List.for_all (fun (uid0, ref0, peeled0) ->
+        List.exists (fun (uid1, ref1, peeled1) ->
+            equal_uid uid0 uid1 && equal_reference ref0 ref1 && peeled0 = peeled1) l1) l0
+
+  let equal_capabilities l0 l1 =
+    if List.length l0 <> List.length l1 then false
+    else List.for_all (fun c0 -> List.exists (Capability.equal c0) l1) l0
+
+  let equal ~uid:equal_uid ~reference:equal_reference a b =
+    equal_shallows ~uid:equal_uid a.shallows b.shallows
+    && equal_advertised_refs ~uid:equal_uid ~reference:equal_reference a.refs b.refs
+    && equal_capabilities a.capabilities b.capabilities
+    && a.version = b.version
+
   let head { refs; _ } =
     try
       let uid, _, _ =
@@ -59,6 +79,9 @@ module Advertised_refs = struct
         Fmt.pf ppf "%a@ " Fmt.(Dump.list Capability.pp) capabilities ;
         List.iter (Fmt.pf ppf "%a@ " pp_ref) refs ;
         List.iter (Fmt.pf ppf "shallow %s@ ") shallows
+
+  let v1 ?(shallows= []) ?(capabilities= []) refs =
+    { shallows; capabilities; refs; version= 1; }
 end
 
 module Proto_request = struct
@@ -237,7 +260,8 @@ module Decoder = struct
     | `Invalid_ack of string
     | `Invalid_result of string
     | `Invalid_command_result of string
-    | `Unexpected_flush ]
+    | `Unexpected_flush
+    | `Invalid_pkt_line ]
 
   let pp_error ppf = function
     | #Decoder.error as err -> Decoder.pp_error ppf err
@@ -266,7 +290,7 @@ module Decoder = struct
     let res = String.Sub.v buf ~start:off ~stop:(off + len) in
     if trim then String.Sub.trim ~drop:is_new_line res else res
 
-  let is_zero = function '\000' -> true | _ -> false
+  let is_zero = function '0' -> true | _ -> false
 
   let v_zero = String.Sub.of_string "\000"
 
@@ -375,10 +399,12 @@ module Decoder = struct
             List.map
               (Capability.of_string <.> String.Sub.to_string)
               capabilities in
+          let peeled = String.Sub.is_suffix ~affix:v_peeled head in
+          let head = if peeled then String.Sub.with_range ~len:(String.Sub.length head - 3) head else head in
           let head = String.Sub.to_string head in
           junk_pkt decoder ;
           let k decoder =
-            decode_others_refs ~version ~head:(uid, head, false) ~capabilities
+            decode_others_refs ~version ~head:(uid, head, peeled) ~capabilities
               decoder in
           prompt_pkt k decoder
       | None -> fail decoder (`Invalid_advertised_ref (String.Sub.to_string v))
@@ -393,8 +419,12 @@ module Decoder = struct
           if String.Sub.for_all is_zero uid
           then decode_no_ref ~version v decoder
           else decode_first_ref ~version v decoder
-      | None -> fail decoder (`Invalid_advertised_ref (String.Sub.to_string v))
-    in
+      | None ->
+        (* XXX(dinosaure): see [empty_clone]. *)
+        return { Advertised_refs.shallows= []
+               ; Advertised_refs.refs= []
+               ; Advertised_refs.capabilities= []
+               ; Advertised_refs.version= 1 } decoder in
 
     (* version (1|2) *)
     let decode_version decoder =
@@ -406,7 +436,7 @@ module Decoder = struct
             let version = int_of_string (String.Sub.to_string version) in
             junk_pkt decoder ;
             prompt_pkt (decode_refs ~version) decoder
-        | None -> prompt_pkt (decode_refs ~version:1) decoder
+        | None -> decode_refs ~version:1 decoder
       else decode_refs decoder in
 
     (* only for HTTP *)
@@ -417,9 +447,7 @@ module Decoder = struct
         junk_pkt decoder ;
         prompt_pkt decode_comment decoder
       | Some _ -> decode_version decoder
-      | None ->
-        junk_pkt decoder ;
-        decode_version decoder in
+      | None -> decode_version decoder in
 
     prompt_pkt decode_comment decoder
 
@@ -441,6 +469,42 @@ module Decoder = struct
     in
     prompt_pkt k decoder
 
+  let decode_packet ~trim decoder =
+    let k decoder =
+      let v = peek_pkt ~trim decoder in
+      let r = String.Sub.to_string v in
+      junk_pkt decoder ;
+      return r decoder in
+    prompt_pkt k decoder
+
+  let prompt_pack_without_sideband kcontinue keof decoder =
+    if decoder.pos > 0
+    then
+      ( let rest = decoder.max - decoder.pos in
+        Bytes.unsafe_blit decoder.buffer decoder.pos decoder.buffer 0 rest
+      ; decoder.max <- rest
+      ; decoder.pos <- 0 ) ;
+    let rec go off =
+      if off = Bytes.length decoder.buffer
+      && decoder.pos > 0
+      then Error { error= `No_enough_space; buffer= decoder.buffer; committed= decoder.pos; }
+      else if off - decoder.pos > 0
+      then ( decoder.max <- off ; safe kcontinue decoder )
+      else
+        Read { buffer= decoder.buffer
+             ; off
+             ; len= Bytes.length decoder.buffer - off
+             ; continue= (fun len -> go (off + len))
+             ; eof= keof decoder } in
+    go decoder.max
+
+  let peek_pack_without_sideband (decoder : decoder) =
+    let payload = Bytes.sub_string decoder.buffer decoder.pos (decoder.max - decoder.pos) in
+    (payload, 0, decoder.max - decoder.pos)
+
+  let junk_pack_without_sideband (decoder : decoder) =
+    decoder.pos <- decoder.max
+
   let decode_pack ?(side_band = false) ~push_pack ~push_stdout ~push_stderr
       decoder =
     let with_side_band decoder =
@@ -455,30 +519,27 @@ module Decoder = struct
           return true decoder
       | Some '\002' ->
           let tail = String.Sub.to_string (String.Sub.tail v) (* copy *) in
+          Fmt.epr ">>> out:%S.\n%!" tail ;
           push_stdout tail ;
           junk_pkt decoder ;
           return true decoder
       | Some '\003' ->
           let tail = String.Sub.to_string (String.Sub.tail v) (* copy *) in
+          Fmt.epr ">>> err:%S.\n%!" tail ;
           push_stderr tail ;
           junk_pkt decoder ;
           return true decoder
       | Some _ -> fail decoder (`Invalid_side_band (String.Sub.to_string v))
       | None -> return false decoder in
+    let end_of_pack decoder () = return false decoder in
     let without_side_band decoder =
-      let v = peek_pkt ~trim:false decoder in
-      if String.Sub.is_empty v
-      then return false decoder
-      else
-        let off = String.Sub.start_pos v + 1 in
-        let len = String.Sub.stop_pos v - off in
-        let buf = String.Sub.base_string v in
-        push_pack (buf, off, len) ;
-        junk_pkt decoder ;
-        return true decoder in
+      let buf, off, len = peek_pack_without_sideband decoder in
+      push_pack (buf, off, len) ;
+      junk_pack_without_sideband decoder ;
+      return true decoder in
     if side_band
-    then prompt_pkt ~strict:false with_side_band decoder
-    else prompt_pkt ~strict:false without_side_band decoder
+    then prompt_pkt ~strict:true with_side_band decoder
+    else prompt_pack_without_sideband without_side_band end_of_pack decoder
 
   let decode_shallows decoder =
     let rec go acc decoder =
@@ -779,6 +840,64 @@ module Encoder = struct
       write_zero encoder ;
       if List.length capabilities > 0 then go capabilities in
     delayed_write_pkt first others encoder
+
+  let encode_advertised_refs encoder advertised_refs =
+    let encode_shallows shallows encoder =
+      let encode_shallow shallow encoder =
+        write encoder "shallow" ;
+        write_space encoder ;
+        write encoder shallow in
+      let rec go shallows encoder =
+        match shallows with
+        | [] -> kflush encoder
+        | hd :: tl ->
+          delayed_write_pkt (encode_shallow hd) (go tl) encoder in
+      go shallows encoder in
+    let encode_others_refs others encoder =
+      let encode_advertised_ref uid refname peeled encoder =
+        write encoder uid ;
+        write_space encoder ;
+        write encoder refname ;
+        if peeled then write encoder "^{}" in
+      let rec go others encoder =
+        match others with
+        | [] -> encode_shallows advertised_refs.Advertised_refs.shallows encoder
+        | (uid, refname, peeled) :: rest ->
+          delayed_write_pkt (encode_advertised_ref uid refname peeled) (go rest) encoder in
+      go others encoder in
+    let encode_first_ref (uid, refname, peeled) encoder =
+      write encoder uid ;
+      write_space encoder ;
+      write encoder refname ;
+      if peeled then write encoder "^{}" ;
+      write_zero encoder ;
+      let rec go = function
+        | [] -> ()
+        | [ capability ] -> write encoder (Capability.to_string capability)
+        | head :: tail ->
+          write encoder (Capability.to_string head) ;
+          write_space encoder ;
+          go tail in
+      go advertised_refs.Advertised_refs.capabilities in
+    let encode_no_refs encoder =
+      let capabilities = "capabilities^{}" and zero_uid = String.make 40 '0' in
+      write encoder zero_uid ;
+      write_space encoder ;
+      write encoder capabilities ;
+      write_zero encoder ;
+      let rec go = function
+        | [] -> ()
+        | [ capability ] -> write encoder (Capability.to_string capability)
+        | head :: tail ->
+          write encoder (Capability.to_string head) ;
+          write_space encoder ;
+          go tail in
+      go advertised_refs.Advertised_refs.capabilities in
+    match advertised_refs.Advertised_refs.refs with
+    | (uid, refname, peeled) :: others ->
+      delayed_write_pkt (encode_first_ref (uid, refname, peeled)) (encode_others_refs others) encoder
+    | [] ->
+      delayed_write_pkt encode_no_refs (encode_shallows advertised_refs.Advertised_refs.shallows) encoder
 
   (* TODO(dinosaure): handle HTTP/stateless and side-band. *)
   let encode_pack ?side_band:(_ = false) ?stateless:(_ = false) encoder payload

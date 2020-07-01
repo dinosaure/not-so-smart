@@ -21,7 +21,8 @@ type error =
   | `Expected_eol_or_space
   | `No_enough_space
   | `Unexpected_end_of_input
-  | `Assert_predicate of char -> bool ]
+  | `Assert_predicate of char -> bool
+  | `Invalid_pkt_line ]
 
 let pp_error ppf = function
   | `End_of_input -> Fmt.string ppf "End of input"
@@ -33,6 +34,7 @@ let pp_error ppf = function
   | `No_enough_space -> Fmt.string ppf "No enough space"
   | `Unexpected_end_of_input -> Fmt.string ppf "Unexpected end of input"
   | `Assert_predicate _ -> Fmt.string ppf "Assert predicate"
+  | `Invalid_pkt_line -> Fmt.string ppf "Invalid PKT-line"
 
 type 'err info = { error : 'err; buffer : Bytes.t; committed : int }
 
@@ -132,7 +134,7 @@ let digit = function
   | 'a' .. 'f' as chr -> 10 + Char.code chr - Char.code 'a'
   | 'A' .. 'F' as chr -> 10 + Char.code chr - Char.code 'A'
   | '0' .. '9' as chr -> Char.code chr - Char.code '0'
-  | _ -> assert false
+  | _ -> invalid_arg "invalid digit"
 
 let to_int ~base ~off ~len buf =
   let code = ref 0 in
@@ -221,36 +223,39 @@ let prompt :
     decoder.max <- rest ;
     decoder.pos <- 0) ;
   let rec go off =
-    if off = Bytes.length decoder.buffer
-       && decoder.pos > 0
-       && not (at_least_one_pkt { decoder with max = off })
-    then
-      Error
-        {
-          error = `No_enough_space;
-          buffer = decoder.buffer;
-          committed = decoder.pos;
-        }
-    else if not (at_least_one_pkt { decoder with max = off })
-            (* XXX(dinosaure): we make a new decoder here and we did __not__ set
-               [decoder.max] owned by end-user, and this is exactly what we want. *)
-    then
-      Read
-        {
-          buffer = decoder.buffer;
-          off;
-          len = Bytes.length decoder.buffer - off;
-          continue = (fun len -> go (off + len));
-          eof =
-            (if strict
-            then error_end_of_input decoder (* fail *)
-            else (
-              decoder.max <- off ;
-              reliable_pkt k decoder));
-        }
-    else (
-      decoder.max <- off ;
-      safe k decoder) in
+    try
+      if off = Bytes.length decoder.buffer
+         && decoder.pos > 0
+         && not (at_least_one_pkt { decoder with max = off })
+      then
+        Error
+          {
+            error = `No_enough_space;
+            buffer = decoder.buffer;
+            committed = decoder.pos;
+          }
+      else if not (at_least_one_pkt { decoder with max = off })
+              (* XXX(dinosaure): we make a new decoder here and we did __not__ set
+                 [decoder.max] owned by end-user, and this is exactly what we want. *)
+      then
+        Read
+          {
+            buffer = decoder.buffer;
+            off;
+            len = Bytes.length decoder.buffer - off;
+            continue = (fun len -> go (off + len));
+            eof =
+              (if strict
+              then error_end_of_input decoder (* fail *)
+              else (
+                decoder.max <- off ;
+                reliable_pkt k decoder));
+          }
+      else (
+        decoder.max <- off ;
+        safe k decoder)
+    with _exn (* XXX(dinosaure): [at_least_one_pkt] can raise an exception. *) ->
+      Error { error= `Invalid_pkt_line; buffer = decoder.buffer; committed = decoder.pos } in
   go decoder.max
 
 let peek_pkt decoder =

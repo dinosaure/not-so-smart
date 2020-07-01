@@ -1,0 +1,14 @@
+(executable
+ (name test)
+ (libraries
+   curl.lwt
+   mirage-crypto-rng.unix
+   digestif digestif.c
+   nss.git
+   bos uri fmt.tty logs.fmt
+   alcotest-lwt))
+
+(rule
+ (alias runtest)
+ (deps (:test test.exe) pack-testzone.pack pack-testzone.idx)
+ (action (run %{test} --color=always)))

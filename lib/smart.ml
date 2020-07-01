@@ -17,13 +17,15 @@ module Witness = struct
     | Done : unit send
     | Flush : unit send
     | Commands : (string, string) Commands.t send
-    | Send_pack     : { side_band : bool; stateless : bool } -> string send
+    | Send_pack : { side_band : bool; stateless : bool } -> string send
+    | Advertised_refs : (string, string) Advertised_refs.t send
 
   type 'a recv =
     | Advertised_refs : (string, string) Advertised_refs.t recv
     | Result : string Result.t recv
     | Status : string Status.t recv
-    | Recv_pack       : {
+    | Packet : bool -> string recv
+    | Recv_pack : {
         side_band : bool;
         push_pack : string * int * int -> unit;
         push_stdout : string -> unit;
@@ -53,7 +55,8 @@ module Value = struct
       | Commands -> Protocol.Encoder.encode_commands encoder v
       | Send_pack { side_band; stateless } ->
           Protocol.Encoder.encode_pack ~side_band ~stateless encoder v
-      | Flush -> Protocol.Encoder.encode_flush encoder in
+      | Flush -> Protocol.Encoder.encode_flush encoder
+      | Advertised_refs -> Protocol.Encoder.encode_advertised_refs encoder v in
     let rec go = function
       | Encoder.Done -> State.Return ()
       | Encoder.Write { continue; buffer; off; len } ->
@@ -78,6 +81,7 @@ module Value = struct
     | Ack -> go (Protocol.Decoder.decode_negotiation decoder)
     | Status -> go (Protocol.Decoder.decode_status decoder)
     | Shallows -> go (Protocol.Decoder.decode_shallows decoder)
+    | Packet trim -> go (Protocol.Decoder.decode_packet ~trim decoder)
 end
 
 type ('a, 'err) t = ('a, 'err) State.t =
@@ -130,6 +134,10 @@ let shallows = Shallows
 
 let send_pack ?(stateless = false) side_band =
   Send_pack { side_band; stateless }
+
+let packet ~trim = Packet trim
+
+let send_advertised_refs : _ send = Advertised_refs
 
 include State.Scheduler (State.Context) (Value)
 
